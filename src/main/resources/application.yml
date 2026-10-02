@@ -76,6 +76,9 @@ springdoc:
     persist-authorization: false
 app:
   customer:
+    verification:
+      url: ${CUSTOMER_VERIFICATION_URL:https://www.myjsons.com/v/73f95344}
+      timeout: ${CUSTOMER_VERIFICATION_TIMEOUT:PT3S}
     cache:
       ttl: ${CUSTOMER_CACHE_TTL:PT1M}
     outbox:

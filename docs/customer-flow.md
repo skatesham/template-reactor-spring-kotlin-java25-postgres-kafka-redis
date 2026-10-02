@@ -55,7 +55,7 @@ usam revisão esperada para impedir efeitos repetidos e perda de atualização.
 
 ## Consistência e entrega
 
-![Diagrama do fluxo Customer, idempotência, retry e DLT](assets/customer-flow.svg)
+![Diagrama reativo de Customer, verificação HTTP WebClient, idempotência, retry e DLT](assets/customer-flow.svg)
 
 [Ver a imagem em tamanho completo](assets/customer-flow.svg).
 
@@ -66,11 +66,23 @@ REST autenticado
   → publicador Outbox [lock SKIP LOCKED, confirmação Kafka]
   → customer.changes.v1 [key = customerId]
        → customer-audit-v1 → PostgreSQL customer_audit
-       → customer-notification-v1 → PostgreSQL customer_notifications → /api/notifications
+       → customer-notification-v1 → verificação HTTP WebClient (create/update)
+                                 → PostgreSQL customer_notifications → /api/notifications
 ```
 
 A notificação é uma notificação interna efetivamente persistida e consultável. Não há envio de email/SMS ou gateway
 externo simulado. Adicionar um fornecedor requer outra porta e idempotência própria.
+
+O consumidor de notificações consulta `app.customer.verification.url` por GET
+antes da transação, em criação e atualização (o email pode mudar no PUT).
+Remoção não depende da consulta. Somente `status=VERIFIED` permite prosseguir;
+`DENIED` ou qualquer status ausente/desconhecido falha, assim como resposta vazia,
+erro HTTP/JSON ou timeout. A recusa passa pelos retries e pela DLT de notificações,
+sem reverter o Customer já confirmado na API e sem impedir a auditoria.
+O provedor padrão é um JSON estático: os demais campos são ignorados e nenhum dado
+do Customer é enviado. Configure `CUSTOMER_VERIFICATION_URL` e
+`CUSTOMER_VERIFICATION_TIMEOUT` (padrão `PT3S`). Os testes substituem a URL por
+um servidor HTTP local e exercitam os dois status em create/update de email.
 
 O scheduler processa até 20 registros por ciclo (500 ms por padrão), com uma transação por registro e espera de
 confirmação limitada a 10 s. O producer usa `acks=all`, idempotência e uma requisição em trânsito. Publicar e marcar

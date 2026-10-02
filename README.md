@@ -1,6 +1,6 @@
 ![Kotlin Template — API modular com Kotlin e Spring Boot](docs/assets/header.svg)
 
-# Kotlin Template
+# Kotlin Reactor Template
 
 [![Line coverage](docs/assets/coverage.svg)](#testes-e-cobertura)
 [![CI](https://github.com/skatesham/template-spring-kotlin-java25-postgres-kafka-redis/actions/workflows/ci.yml/badge.svg)](https://github.com/skatesham/template-spring-kotlin-java25-postgres-kafka-redis/actions/workflows/ci.yml)
@@ -15,7 +15,7 @@
 [![Redis 8](https://img.shields.io/badge/Redis-8-FF4438?logo=redis&logoColor=white)](compose.yaml)
 [![Kafka 4.1.2](https://img.shields.io/badge/Kafka-4.1.2-231F20?logo=apachekafka&logoColor=white)](compose.yaml)
 
-API modular em **Kotlin + Spring Boot**, com WebFlux/Netty, Reactor e R2DBC PostgreSQL e domínio independente de infraestrutura. O projeto implementa autenticação e um fluxo completo de Customer: **REST → PostgreSQL + Outbox → Kafka → auditoria e notificações**, com cache Redis, idempotência e recuperação de falhas.
+API modular em **Kotlin + Spring Boot**, com fluxo da aplicação inteiramente reativo: WebFlux/Netty nos endpoints, Reactor nos casos de uso, R2DBC no PostgreSQL, Redis reativo e WebClient nas integrações HTTP. O domínio permanece independente de infraestrutura. O projeto implementa autenticação e um fluxo completo de Customer: **REST → PostgreSQL + Outbox → Kafka → auditoria e notificações**, com cache, idempotência e recuperação de falhas.
 
 [Primeira execução](#primeira-execução) · [Features](#features-implementadas) · [Diagrama](#como-o-fluxo-funciona) · [API](#api-e-autenticação) · [Falhas](#retry-dlt-e-recuperação) · [Makefile](#comandos-do-makefile) · [Testes](#testes-e-cobertura)
 
@@ -109,6 +109,7 @@ Para encerrar, interrompa a aplicação com `Ctrl+C` e execute `make down`. O Co
 | Kafka | Chave `customerId`, três partições e grupos independentes para auditoria e notificações |
 | Auditoria | Registro de fatos em `customer_audit`, com deduplicação e cursor por Customer |
 | Notificações | Inbox interna persistida em `customer_notifications`, consultável pela API |
+| Integração HTTP reativa | WebClient consulta o serviço de verificação no consumidor de notificações; somente `status=VERIFIED` permite continuar |
 | Retry + DLT | Backoff por consumidor, DLT específica do grupo e endpoints ADMIN para recuperação |
 | Observabilidade | Métricas REST/R2DBC/cache/Outbox/Kafka/consumers; saúde e erros sem dados pessoais |
 | Retenção | Limpeza de perfis inativos, cache, reservas, eventos e evidências, preservando deduplicação de Customers ativos |
@@ -118,7 +119,7 @@ As notificações são **internas**: a feature não envia email ou SMS. UUIDs n�
 
 ## Como o fluxo funciona
 
-![Fluxo completo: API, PostgreSQL, Redis, Outbox, Kafka, consumidores, idempotência, retries, DLT e métricas](docs/assets/customer-flow.svg)
+![Fluxo reativo: WebFlux, Reactor, R2DBC, Redis, Outbox, Kafka, verificação WebClient, retries e DLT](docs/assets/customer-flow.svg)
 
 [Abra o diagrama em tamanho completo](docs/assets/customer-flow.svg). O SVG é local, editável, sem scripts ou dependências externas.
 
@@ -147,6 +148,32 @@ Cada listener valida chave/contrato e delega ao caso de uso. Dentro de uma trans
 | Há uma lacuna, ou tentativa de alteração após remoção | Falha: não aplica uma sequência incorreta |
 
 `eventId` é único; a revisão monotônica complementa a deduplicação mesmo depois da limpeza dos registros individuais. O offset Kafka é confirmado por registro após o commit do caso de uso. Se houver rollback, não fica efeito parcial no banco. Cada grupo mantém sua própria deduplicação; a falha da auditoria não impede a notificação do mesmo evento.
+
+### Demonstração de integração HTTP com Reactor
+
+O consumidor de notificações faz um GET com WebClient para a URL configurada em
+`app.customer.verification.url`, por padrão
+[myjsons.com/v/73f95344](https://www.myjsons.com/v/73f95344). Ele consulta o serviço
+em eventos de **criação e atualização**, pois PUT permite alterar o email.
+Eventos de remoção seguem sem essa consulta. A chamada ocorre antes de abrir a
+transação de gravação da notificação.
+
+A aplicação usa somente `status`: `VERIFIED` permite gravar a notificação;
+`DENIED`, status desconhecido ou ausente e resposta vazia impedem a gravação.
+Erros HTTP, JSON inválido e timeout também falham. O consumidor aplica os retries
+existentes e encaminha falhas esgotadas à DLT de notificações. A auditoria continua
+independente. Como a verificação é assíncrona, ela não desfaz o Customer já
+persistido nem altera a resposta HTTP da criação/atualização.
+
+Esse endpoint retorna um JSON estático de demonstração. Nome, email, risco,
+`verificationId`, `requestId` e horário retornados são ignorados; nenhum dado do
+Customer é enviado ao serviço. A demonstração não verifica o email real do perfil.
+Configure `CUSTOMER_VERIFICATION_URL` para trocar o provedor e
+`CUSTOMER_VERIFICATION_TIMEOUT` para alterar o limite de três segundos por tentativa.
+
+Os testes usam um servidor HTTP local com o mesmo formato de resposta e
+Testcontainers: cobrem `VERIFIED` e `DENIED` tanto na criação quanto na alteração
+de email, incluindo retries, DLT e ausência de notificação na recusa.
 
 ## Retry, DLT e recuperação
 
@@ -263,12 +290,14 @@ Os comandos de build usam `./gradlew`. Rodar o Wrapper diretamente **não carreg
 | `CUSTOMER_OUTBOX_POLL_MS` | `500`; até 20 eventos por ciclo |
 | `CUSTOMER_OUTBOX_MAX_ATTEMPTS` | `10` |
 | `CUSTOMER_CONSUMER_BACKOFF_MS` | `1000`; intervalo inicial do retry |
+| `CUSTOMER_VERIFICATION_URL` | `https://www.myjsons.com/v/73f95344`; GET do serviço demonstrativo |
+| `CUSTOMER_VERIFICATION_TIMEOUT` | `PT3S`; limite por tentativa de verificação |
 
 Para usar serviços externos, exporte endereços/segredos e execute `./gradlew bootRun`; `make run` também inicia o Compose local. O gerenciamento de Compose pelo Spring Boot pode ser ativado com `DOCKER_COMPOSE_ENABLED=true`, mas a sequência recomendada acima usa GNU Make.
 
 ## Execução reativa
 
-Endpoints, casos de uso, acesso a PostgreSQL e Redis compõem `Mono`/`Flux` sem
+Endpoints, casos de uso, integrações HTTP e acesso a PostgreSQL e Redis compõem `Mono`/`Flux` sem
 `block()` nem subscriptions manuais. As portas reativas ficam em
 `application/port/`, preservando aggregates e invariantes de domínio independentes
 de Reactor. `@Transactional` usa `R2dbcTransactionManager` e o contexto Reactor;
@@ -301,7 +330,7 @@ src/main/kotlin/com/kotlin/template/
 # Nos contextos, conforme a responsabilidade:
 <context>/domain/          # Invariantes e eventos; sem Spring/Reactor
 <context>/application/     # usecase/<intenção>, port, result, contract e exception
-<context>/infrastructure/  # persistence/adapter, cache, messaging e config
+<context>/infrastructure/  # persistence/adapter, cache, client, messaging e config
 <context>/interfaces/      # rest/{request,response}, listeners e jobs do contexto
 
 src/main/resources/db/migration/
@@ -315,6 +344,7 @@ Os contextos se comunicam por contratos de aplicação/eventos, sem importar rep
 | --- | --- |
 | Kotlin 2.3.21 / JDK 25 / Spring Boot 4.1.1 | Linguagem, toolchain e runtime |
 | WebFlux / Validation / Security / OAuth2 Resource Server | HTTP, contratos, autenticação e autorização |
+| WebClient / Reactor Netty | Integrações HTTP não bloqueantes |
 | Reactor / Spring Data R2DBC / PostgreSQL 18 / Flyway | Persistência e migrations |
 | Redis 8 / Spring Data Redis Reactive | Cache |
 | Kafka 4.1.2 / Spring for Apache Kafka | Eventos, grupos de consumo e DLT |

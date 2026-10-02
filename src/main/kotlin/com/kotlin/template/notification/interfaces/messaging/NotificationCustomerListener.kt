@@ -1,6 +1,7 @@
 package com.kotlin.template.notification.interfaces.messaging
 
 import com.kotlin.template.customer.application.contract.CustomerChange
+import com.kotlin.template.customer.application.usecase.verify.VerifyCustomerChange
 import com.kotlin.template.notification.application.usecase.record.NotifyCustomerChange
 import com.kotlin.template.shared.infrastructure.messaging.KafkaListenerFactory
 import io.micrometer.core.instrument.MeterRegistry
@@ -16,6 +17,7 @@ import tools.jackson.databind.ObjectMapper
 @Component
 @ConditionalOnProperty(name = ["app.customer.messaging.enabled"], havingValue = "true", matchIfMissing = true)
 class NotificationCustomerListener(private val mapper: ObjectMapper, private val record: NotifyCustomerChange,
+    private val verify: VerifyCustomerChange,
     private val factory: KafkaListenerFactory, private val kafka: KafkaTemplate<String, String>, private val meters: MeterRegistry,
     @Value("\${app.customer.consumer.backoff-ms:1000}") private val backoff: Long) {
     @KafkaListener(id = "customer-notification-v1", groupId = "customer-notification-v1", topics = ["customer.changes.v1"],
@@ -26,7 +28,8 @@ class NotificationCustomerListener(private val mapper: ObjectMapper, private val
         Mono.defer {
             val change = mapper.readValue(message.value(), CustomerChange::class.java)
             require(message.key() == change.customerId.toString()) { "Invalid customer event key" }
-            record.execute(change)
+            // Verify before opening the notification database transaction.
+            verify.execute(change).then(Mono.defer { record.execute(change) })
         }.onErrorMap { NotificationCustomerDeliveryFailure() }
     }
 }

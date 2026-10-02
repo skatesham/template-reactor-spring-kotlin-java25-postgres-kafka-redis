@@ -60,7 +60,9 @@ import tools.jackson.databind.ObjectMapper
 @ExtendWith(OutputCaptureExtension::class)
 @DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 @AutoConfigureWebTestClient
-@Import(com.kotlin.template.support.ReactiveTestConfiguration::class, CustomerFlowIntegrationTests.FailureConfiguration::class)
+@Import(com.kotlin.template.support.ReactiveTestConfiguration::class,
+    com.kotlin.template.support.CustomerVerificationTestConfiguration::class,
+    CustomerFlowIntegrationTests.FailureConfiguration::class)
 @SpringBootTest(
     properties = [
         "app.security.jwt.secret=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",

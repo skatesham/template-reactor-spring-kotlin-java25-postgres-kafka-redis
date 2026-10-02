@@ -1,10 +1,12 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1960" viewBox="0 0 1200 1960" role="img"
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="2220" viewBox="0 0 1200 2220" role="img"
      aria-labelledby="title description">
-    <title id="title">Customer: da API ao consumo confiável de eventos</title>
-    <desc id="description">Diagrama do fluxo implementado: HTTP local ou HTTPS via proxy, autenticação JWT, domínio,
-        transação PostgreSQL com Customer, chave de idempotência e Outbox, cache Redis, publicador Kafka, grupos
-        independentes de auditoria e notificações, cursor de revisão, commit antes do offset, retry, DLT, replay
-        administrativo e métricas.
+    <title id="title">Customer: fluxo reativo com Reactor e verificação HTTP</title>
+    <desc id="description">WebFlux/Netty, autenticação JWT, casos de uso Mono/Flux, domínio independente de Reactor,
+        transação R2DBC PostgreSQL com Customer, chave de idempotência e Outbox, cache Redis reativo e Kafka assíncrono.
+        Grupos independentes de auditoria e notificações retornam Mono. Antes da transação da notificação, WebClient
+        consulta a URL configurada em criação e atualização: somente status VERIFIED permite continuar; DENIED ou
+        erro segue retry e DLT, sem desfazer o Customer já confirmado pela API. Remoção não consulta o provedor.
+        Cursor de revisão, commit antes do offset, replay administrativo e métricas. Flyway usa JDBC na inicialização.
     </desc>
     <defs>
         <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7"
@@ -20,10 +22,10 @@
         .muted{fill:#52647d}.good{fill:#116b49}.bad{fill:#b34328}
         .line{fill:none;stroke:#475569;stroke-width:2.5;marker-end:url(#arrow);stroke-linejoin:round}
     </style>
-    <rect width="1200" height="1960" fill="#f6f8fc"/>
+    <rect width="1200" height="2220" fill="#f6f8fc"/>
 
-    <text x="32" y="54" class="heading">CUSTOMER · FLUXO COMPLETO</text>
-    <text x="32" y="86" class="body muted">Gravação atômica, eventos em ordem e efeitos idempotentes por consumidor.
+    <text x="32" y="54" class="heading">CUSTOMER · FLUXO REATIVO COMPLETO</text>
+    <text x="32" y="86" class="body muted">WebFlux/Netty · Reactor · R2DBC PostgreSQL · Redis reativo · Kafka assíncrono.
     </text>
     <rect x="24" y="118" width="1152" height="384" rx="14" fill="#fff" stroke="#d9e2ee"/>
     <circle cx="59" cy="153" r="17" fill="#e8efff"/>
@@ -31,19 +33,19 @@
     <text x="88" y="161" class="heading">Entrada, banco, cache e publicação</text>
     <rect x="44" y="194" width="200" height="154" rx="14" fill="#f1f5fb" stroke="#d9e2ee"/>
     <text x="60" y="226" class="label">API REST</text>
-    <text x="60" y="255" class="body">HTTP local</text>
-    <text x="60" y="280" class="body">HTTPS via proxy¹</text>
+    <text x="60" y="255" class="body">WebFlux + Netty</text>
+    <text x="60" y="280" class="body">HTTP / HTTPS¹</text>
     <text x="60" y="305" class="body">JWT + proprietário</text>
     <rect x="272" y="194" width="200" height="154" rx="14" fill="#f1f5fb" stroke="#d9e2ee"/>
     <text x="288" y="226" class="label">Application</text>
     <text x="288" y="255" class="small">Domínio + validação</text>
     <text x="288" y="280" class="small">UUIDv7 + revisão</text>
-    <text x="288" y="305" class="small">Eventos de domínio</text>
+    <text x="288" y="305" class="small">Mono / Flux</text>
     <rect x="500" y="194" width="200" height="154" rx="14" fill="#eaf3ff" stroke="#b9d4ef"/>
     <text x="516" y="226" class="label">PostgreSQL</text>
-    <text x="516" y="255" class="body">Customer + Outbox</text>
-    <text x="516" y="280" class="body">+ chave de criação</text>
-    <text x="516" y="305" class="body">Um único commit</text>
+    <text x="516" y="255" class="small">R2DBC · transação</text>
+    <text x="516" y="280" class="body">Customer + Outbox</text>
+    <text x="516" y="305" class="body">+ chave de criação</text>
     <rect x="728" y="194" width="200" height="154" rx="14" fill="#f1f5fb" stroke="#d9e2ee"/>
     <text x="744" y="226" class="label">Relay Outbox</text>
     <text x="744" y="255" class="body">Após commit</text>
@@ -66,10 +68,10 @@
     <text x="60" y="432" class="small">POST: Idempotency-Key + proprietário; retenção de 24 h.</text>
     <text x="60" y="458" class="small">PUT / DELETE: revisão esperada; conflito retorna 409.</text>
     <rect x="566" y="374" width="590" height="103" rx="14" fill="#f5f0ff" stroke="#d4c8eb"/>
-    <text x="582" y="403" class="label">Redis · cache de consultas</text>
+    <text x="582" y="403" class="label">Redis · cache reativo</text>
     <text x="582" y="432" class="small">GET: verifica dono/revisão no banco → Redis; miss → banco.</text>
     <text x="582" y="458" class="small">TTL 60 s; alteração invalida após commit; falha → fallback.</text>
-    <rect x="24" y="526" width="1152" height="706" rx="14" fill="#fff" stroke="#d9e2ee"/>
+    <rect x="24" y="526" width="1152" height="926" rx="14" fill="#fff" stroke="#d9e2ee"/>
     <circle cx="59" cy="561" r="17" fill="#e8efff"/>
     <text x="49" y="568" class="label">2</text>
     <text x="88" y="569" class="heading">O mesmo evento chega aos dois grupos independentes</text>
@@ -80,10 +82,19 @@
     <rect x="44" y="680" width="534" height="93" rx="14" fill="#f1f5fb" stroke="#d9e2ee"/>
     <text x="60" y="712" class="label">Auditoria</text>
     <text x="60" y="741" class="body">customer-audit-v1</text>
-    <text x="60" y="766" class="body">Listener valida chave, schema, IDs e tipo.</text>
+    <text x="60" y="766" class="body">Mono&lt;Void&gt; · valida chave e contrato.</text>
+    <path d="M311 773 V803" class="line"/>
+    <rect x="44" y="806" width="534" height="180" rx="14" fill="#f1f5fb" stroke="#d9e2ee"/>
+    <text x="60" y="836" class="label">Processamento reativo independente</text>
+    <text x="60" y="863" class="small">Reactor coordena retry e conclusão.</text>
+    <text x="60" y="889" class="small">Um registro por poll; ordem por partição.</text>
+    <text x="60" y="915" class="small">Auditoria não consulta o serviço de verificação.</text>
+    <text x="60" y="941" class="small">Domínio independente de Spring e Reactor.</text>
+    <text x="60" y="967" class="small">Sem block() ou subscribe() manual em produção.</text>
+    <g transform="translate(0,220)">
     <path d="M311 773 V803" class="line"/>
     <rect x="44" y="806" width="534" height="150" rx="14" fill="#eaf3ff" stroke="#b9d4ef"/>
-    <text x="60" y="836" class="label">PostgreSQL · lock do cursor por Customer</text>
+    <text x="60" y="836" class="label">R2DBC · lock do cursor por Customer</text>
     <text x="60" y="868" class="body good">revision ≤ cursor → duplicata; sem novo efeito.</text>
     <text x="60" y="900" class="body">revision = cursor + 1 → aplica o evento.</text>
     <text x="60" y="932" class="body bad">Lacuna ou pós-remoção → falha; não salta revisão.</text>
@@ -95,13 +106,23 @@
     <path d="M311 1100 V1131" class="line"/>
     <rect x="44" y="1134" width="534" height="56" rx="14" fill="#eaf7f0" stroke="#bcdcc8"/>
     <text x="60" y="1168" class="ack">Commit PostgreSQL → confirma offset Kafka</text>
+    </g>
     <rect x="622" y="680" width="534" height="93" rx="14" fill="#f1f5fb" stroke="#d9e2ee"/>
     <text x="638" y="712" class="label">Notificações internas</text>
     <text x="638" y="741" class="body">customer-notification-v1</text>
-    <text x="638" y="766" class="body">Listener valida chave, schema, IDs e tipo.</text>
+    <text x="638" y="766" class="body">Mono&lt;Void&gt; · valida chave e contrato.</text>
+    <path d="M889 773 V803" class="line"/>
+    <rect x="622" y="806" width="534" height="180" rx="14" fill="#f5f0ff" stroke="#d4c8eb"/>
+    <text x="638" y="836" class="label">Verificação HTTP · WebClient</text>
+    <text x="638" y="863" class="small">GET da URL configurada · timeout padrão 3 s.</text>
+    <text x="638" y="889" class="small">Create + update (PUT permite alterar email).</text>
+    <text x="638" y="915" class="small good">VERIFIED → segue; remoção não consulta.</text>
+    <text x="638" y="941" class="small bad">DENIED / erro → retry e DLT (etapa 3).</text>
+    <text x="638" y="967" class="small">Somente status; antes da transação R2DBC.</text>
+    <g transform="translate(0,220)">
     <path d="M889 773 V803" class="line"/>
     <rect x="622" y="806" width="534" height="150" rx="14" fill="#eaf3ff" stroke="#b9d4ef"/>
-    <text x="638" y="836" class="label">PostgreSQL · lock do cursor por Customer</text>
+    <text x="638" y="836" class="label">R2DBC · lock do cursor por Customer</text>
     <text x="638" y="868" class="body good">revision ≤ cursor → duplicata; sem novo efeito.</text>
     <text x="638" y="900" class="body">revision = cursor + 1 → aplica o evento.</text>
     <text x="638" y="932" class="body bad">Lacuna ou pós-remoção → falha; não salta revisão.</text>
@@ -113,9 +134,9 @@
     <path d="M889 1100 V1131" class="line"/>
     <rect x="622" y="1134" width="534" height="56" rx="14" fill="#eaf7f0" stroke="#bcdcc8"/>
     <text x="638" y="1168" class="ack">Commit PostgreSQL → confirma offset Kafka</text>
-    <text x="44" y="1210" class="small muted">Se o processamento falhar: rollback do banco e tratamento no fluxo 3, sem
-        efeito parcial.
-    </text>
+    </g>
+    <text x="44" y="1430" class="small muted">DENIED não grava notificação; Customer já confirmado pela API permanece; auditoria segue.</text>
+    <g transform="translate(0,220)">
     <rect x="24" y="1256" width="1152" height="424" rx="14" fill="#fff" stroke="#d9e2ee"/>
     <circle cx="59" cy="1291" r="17" fill="#e8efff"/>
     <text x="49" y="1298" class="label">3</text>
@@ -129,8 +150,8 @@
     <text x="60" y="1481" class="small">Producer: acks=all + idempotência; pode haver duplicata.</text>
     <rect x="622" y="1320" width="534" height="190" rx="14" fill="#fff6ed" stroke="#e9cdb1"/>
     <text x="638" y="1352" class="label">Falha ao consumir · por grupo</text>
-    <text x="638" y="1381" class="small">Tentativa inicial + 3 retries: 1, 2 e 4 s.</text>
-    <text x="638" y="1406" class="small">Contador de entrega; espera na mesma partição.</text>
+    <text x="638" y="1381" class="small">Reactor: tentativa inicial + 3 retries (1, 2 e 4 s).</text>
+    <text x="638" y="1406" class="small">Partição pausada durante o processamento.</text>
     <text x="638" y="1431" class="small">Esgotou → publica na DLT específica do grupo.</text>
     <text x="638" y="1456" class="small">Offset avança só após confirmação da DLT.</text>
     <text x="638" y="1481" class="small">Se a DLT falhar, o original fica para nova tentativa.</text>
@@ -166,4 +187,6 @@
     <text x="32" y="1949" class="small muted">At-least-once: reentregas são possíveis; PostgreSQL + revisão evitam
         repetir o efeito de negócio.
     </text>
+    </g>
+    <text x="32" y="2200" class="small muted">Flyway/JDBC só na inicialização · envio Kafka e PBKDF2 isolados em boundedElastic.</text>
 </svg>
