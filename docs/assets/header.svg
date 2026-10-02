@@ -1,0 +1,83 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="320" viewBox="0 0 1200 320" role="img"
+     aria-labelledby="title desc">
+    <title id="title">Kotlin Template</title>
+    <desc id="desc">Template modular em Kotlin e Spring Boot. Fluxos animados apresentam a API e a infraestrutura de
+        PostgreSQL, Redis e Kafka.
+    </desc>
+    <defs>
+        <linearGradient id="background" x2="1" y2="1">
+            <stop stop-color="#101526"/>
+            <stop offset="1" stop-color="#17122c"/>
+        </linearGradient>
+        <linearGradient id="accent" x2="1" y2="1">
+            <stop stop-color="#fd9258"/>
+            <stop offset=".5" stop-color="#be72f8"/>
+            <stop offset="1" stop-color="#777bff"/>
+        </linearGradient>
+        <radialGradient id="halo">
+            <stop stop-color="#9a66f4" stop-opacity=".18"/>
+            <stop offset="1" stop-color="#9a66f4" stop-opacity="0"/>
+        </radialGradient>
+        <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
+            <path d="M32 0H0V32" fill="none" stroke="#a4a1c7" stroke-opacity=".045"/>
+        </pattern>
+        <clipPath id="frame">
+            <rect width="1200" height="320" rx="20"/>
+        </clipPath>
+        <style>
+            text { font-family: 'Segoe UI', Arial, sans-serif; }
+            .flow { stroke-dasharray: 5 11; animation: flow 3s linear infinite; }
+            .pulse { animation: pulse 3s ease-in-out infinite; }
+            .ambient { animation: drift 14s ease-in-out infinite alternate; }
+            @keyframes flow { to { stroke-dashoffset: -64; } }
+            @keyframes pulse { 0%,100% { opacity: .45; } 50% { opacity: 1; } }
+            @keyframes drift { to { transform: translate(-35px, 12px); } }
+            @media (prefers-reduced-motion: reduce) { .flow, .pulse, .ambient { animation: none; } }
+        </style>
+    </defs>
+    <g clip-path="url(#frame)">
+        <rect width="1200" height="320" fill="url(#background)"/>
+        <rect width="1200" height="320" fill="url(#grid)"/>
+        <ellipse class="ambient" cx="870" cy="150" rx="420" ry="280" fill="url(#halo)"/>
+        <path d="M0 319H1200" stroke="url(#accent)" stroke-width="3"/>
+        <text x="56" y="54" fill="#c5a9ef" font-size="11" font-weight="600" letter-spacing="3">MODULAR MONOLITH / API
+            FOUNDATION
+        </text>
+        <text x="56" y="118" fill="#f5f3ff" font-size="49" font-weight="700" letter-spacing="-1.7">Kotlin Template
+            <tspan fill="#be8afa">.</tspan>
+        </text>
+        <text x="58" y="155" fill="#bebed3" font-size="18">Domínio independente. Integrações bem definidas.</text>
+        <text x="58" y="187" fill="#8f92ad" font-size="14">Kotlin · Spring Boot · PostgreSQL · Redis · Kafka</text>
+        <g transform="translate(58 224)" font-size="12" font-weight="600">
+            <rect width="108" height="32" rx="8" fill="#302242" stroke="#65417b"/>
+            <text x="54" y="21" fill="#e3caff" text-anchor="middle">Spring MVC</text>
+            <rect x="120" width="88" height="32" rx="8" fill="#24263f" stroke="#464b73"/>
+            <text x="164" y="21" fill="#c8cdfb" text-anchor="middle">JPA / SQL</text>
+            <rect x="220" width="105" height="32" rx="8" fill="#352c2e" stroke="#735246"/>
+            <text x="272" y="21" fill="#ffd0b1" text-anchor="middle">JWT / Roles</text>
+            <rect x="337" width="99" height="32" rx="8" fill="#1c3033" stroke="#365d60"/>
+            <text x="386" y="21" fill="#b1deda" text-anchor="middle">OpenAPI</text>
+        </g>
+        <path d="M707 45V275" stroke="#a5a0ce" stroke-opacity=".12"/>
+        <g fill="none" stroke="#45445f" stroke-width="2">
+            <path d="M942 100V139M942 181V200H820V222M942 200V222M942 200H1064V222"/>
+        </g>
+        <g fill="none" stroke="url(#accent)" stroke-width="2" class="flow">
+            <path d="M942 100V139M942 181V200H820V222M942 200V222M942 200H1064V222"/>
+        </g>
+        <g text-anchor="middle">
+            <rect x="862" y="57" width="160" height="44" rx="10" fill="#20233b" stroke="#55517b"/>
+            <text x="942" y="84" font-size="13" font-weight="600" fill="#e8e5fb">HTTP / Spring MVC</text>
+            <rect x="862" y="138" width="160" height="44" rx="10" fill="#30213f" stroke="#a26ad0"/>
+            <circle cx="879" cy="160" r="3" fill="#c88ff4" class="pulse"/>
+            <text x="947" y="165" font-size="13" font-weight="600" fill="#eedcff">Spring Boot</text>
+            <rect x="765" y="221" width="110" height="39" rx="9" fill="#20273e" stroke="#485d80"/>
+            <text x="820" y="245" font-size="12" fill="#b9d3f3">PostgreSQL</text>
+            <rect x="890" y="221" width="104" height="39" rx="9" fill="#31212d" stroke="#794557"/>
+            <text x="942" y="245" font-size="12" fill="#efb5c6">Redis</text>
+            <rect x="1010" y="221" width="108" height="39" rx="9" fill="#2e2a27" stroke="#746150"/>
+            <text x="1064" y="245" font-size="12" fill="#edcfae">Kafka</text>
+            <text x="942" y="289" font-size="10" letter-spacing="2" fill="#8f88aa">PORTS &amp; ADAPTERS</text>
+        </g>
+    </g>
+</svg>

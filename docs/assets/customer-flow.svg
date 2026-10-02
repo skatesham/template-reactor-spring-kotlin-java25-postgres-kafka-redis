@@ -1,0 +1,169 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1960" viewBox="0 0 1200 1960" role="img"
+     aria-labelledby="title description">
+    <title id="title">Customer: da API ao consumo confiável de eventos</title>
+    <desc id="description">Diagrama do fluxo implementado: HTTP local ou HTTPS via proxy, autenticação JWT, domínio,
+        transação PostgreSQL com Customer, chave de idempotência e Outbox, cache Redis, publicador Kafka, grupos
+        independentes de auditoria e notificações, cursor de revisão, commit antes do offset, retry, DLT, replay
+        administrativo e métricas.
+    </desc>
+    <defs>
+        <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7"
+                orient="auto-start-reverse">
+            <path d="M0 0 L10 5 L0 10 Z" fill="#475569"/>
+        </marker>
+    </defs>
+    <style>
+        text{font-family:DejaVu Sans,Arial,sans-serif;fill:#172b4d}
+        .heading{font-weight:700;font-size:25px}.label{font-weight:700;font-size:21px}
+        .body{font-size:17px}.small{font-size:16px}.mono{font-family:DejaVu Sans Mono,monospace;font-size:16px}
+        .ack{font-weight:700;font-size:19px}.topic{font-family:DejaVu Sans Mono,monospace;font-size:14px}
+        .muted{fill:#52647d}.good{fill:#116b49}.bad{fill:#b34328}
+        .line{fill:none;stroke:#475569;stroke-width:2.5;marker-end:url(#arrow);stroke-linejoin:round}
+    </style>
+    <rect width="1200" height="1960" fill="#f6f8fc"/>
+
+    <text x="32" y="54" class="heading">CUSTOMER · FLUXO COMPLETO</text>
+    <text x="32" y="86" class="body muted">Gravação atômica, eventos em ordem e efeitos idempotentes por consumidor.
+    </text>
+    <rect x="24" y="118" width="1152" height="384" rx="14" fill="#fff" stroke="#d9e2ee"/>
+    <circle cx="59" cy="153" r="17" fill="#e8efff"/>
+    <text x="49" y="160" class="label">1</text>
+    <text x="88" y="161" class="heading">Entrada, banco, cache e publicação</text>
+    <rect x="44" y="194" width="200" height="154" rx="14" fill="#f1f5fb" stroke="#d9e2ee"/>
+    <text x="60" y="226" class="label">API REST</text>
+    <text x="60" y="255" class="body">HTTP local</text>
+    <text x="60" y="280" class="body">HTTPS via proxy¹</text>
+    <text x="60" y="305" class="body">JWT + proprietário</text>
+    <rect x="272" y="194" width="200" height="154" rx="14" fill="#f1f5fb" stroke="#d9e2ee"/>
+    <text x="288" y="226" class="label">Application</text>
+    <text x="288" y="255" class="small">Domínio + validação</text>
+    <text x="288" y="280" class="small">UUIDv7 + revisão</text>
+    <text x="288" y="305" class="small">Eventos de domínio</text>
+    <rect x="500" y="194" width="200" height="154" rx="14" fill="#eaf3ff" stroke="#b9d4ef"/>
+    <text x="516" y="226" class="label">PostgreSQL</text>
+    <text x="516" y="255" class="body">Customer + Outbox</text>
+    <text x="516" y="280" class="body">+ chave de criação</text>
+    <text x="516" y="305" class="body">Um único commit</text>
+    <rect x="728" y="194" width="200" height="154" rx="14" fill="#f1f5fb" stroke="#d9e2ee"/>
+    <text x="744" y="226" class="label">Relay Outbox</text>
+    <text x="744" y="255" class="body">Após commit</text>
+    <text x="744" y="280" class="body">SKIP LOCKED</text>
+    <text x="744" y="305" class="body">ACK → PUBLISHED</text>
+    <rect x="956" y="194" width="200" height="154" rx="14" fill="#fff3e2" stroke="#efd3a5"/>
+    <text x="972" y="226" class="label">Kafka</text>
+    <text x="972" y="255" class="topic">customer.changes.v1</text>
+    <text x="972" y="280" class="topic">key = customerId</text>
+    <text x="972" y="305" class="topic">3 partições</text>
+    <path d="M244 272 H269" class="line"/>
+    <path d="M472 272 H497" class="line"/>
+    <path d="M700 272 H725" class="line"/>
+    <path d="M928 272 H953" class="line"/>
+    <text x="44" y="185" class="small muted">POST / PUT / DELETE → alteração do Customer + fato de negócio na mesma
+        transação
+    </text>
+    <rect x="44" y="374" width="500" height="103" rx="14" fill="#f2f6ff" stroke="#c8d5ed"/>
+    <text x="60" y="403" class="label">Idempotência HTTP fica no banco</text>
+    <text x="60" y="432" class="small">POST: Idempotency-Key + proprietário; retenção de 24 h.</text>
+    <text x="60" y="458" class="small">PUT / DELETE: revisão esperada; conflito retorna 409.</text>
+    <rect x="566" y="374" width="590" height="103" rx="14" fill="#f5f0ff" stroke="#d4c8eb"/>
+    <text x="582" y="403" class="label">Redis · cache de consultas</text>
+    <text x="582" y="432" class="small">GET: verifica dono/revisão no banco → Redis; miss → banco.</text>
+    <text x="582" y="458" class="small">TTL 60 s; alteração invalida após commit; falha → fallback.</text>
+    <rect x="24" y="526" width="1152" height="706" rx="14" fill="#fff" stroke="#d9e2ee"/>
+    <circle cx="59" cy="561" r="17" fill="#e8efff"/>
+    <text x="49" y="568" class="label">2</text>
+    <text x="88" y="569" class="heading">O mesmo evento chega aos dois grupos independentes</text>
+    <rect x="402" y="590" width="396" height="47" rx="10" fill="#fff3e2" stroke="#efd3a5"/>
+    <text x="449" y="620" class="mono">customer.changes.v1</text>
+    <path d="M600 637 V655 H311 V677" class="line"/>
+    <path d="M600 637 V655 H889 V677" class="line"/>
+    <rect x="44" y="680" width="534" height="93" rx="14" fill="#f1f5fb" stroke="#d9e2ee"/>
+    <text x="60" y="712" class="label">Auditoria</text>
+    <text x="60" y="741" class="body">customer-audit-v1</text>
+    <text x="60" y="766" class="body">Listener valida chave, schema, IDs e tipo.</text>
+    <path d="M311 773 V803" class="line"/>
+    <rect x="44" y="806" width="534" height="150" rx="14" fill="#eaf3ff" stroke="#b9d4ef"/>
+    <text x="60" y="836" class="label">PostgreSQL · lock do cursor por Customer</text>
+    <text x="60" y="868" class="body good">revision ≤ cursor → duplicata; sem novo efeito.</text>
+    <text x="60" y="900" class="body">revision = cursor + 1 → aplica o evento.</text>
+    <text x="60" y="932" class="body bad">Lacuna ou pós-remoção → falha; não salta revisão.</text>
+    <path d="M311 956 V987" class="line"/>
+    <rect x="44" y="990" width="534" height="110" rx="14" fill="#eaf7f0" stroke="#bcdcc8"/>
+    <text x="60" y="1020" class="label">customer_audit</text>
+    <text x="60" y="1049" class="body">eventId único + efeito + avanço do cursor</text>
+    <text x="60" y="1077" class="body">Na mesma transação.</text>
+    <path d="M311 1100 V1131" class="line"/>
+    <rect x="44" y="1134" width="534" height="56" rx="14" fill="#eaf7f0" stroke="#bcdcc8"/>
+    <text x="60" y="1168" class="ack">Commit PostgreSQL → confirma offset Kafka</text>
+    <rect x="622" y="680" width="534" height="93" rx="14" fill="#f1f5fb" stroke="#d9e2ee"/>
+    <text x="638" y="712" class="label">Notificações internas</text>
+    <text x="638" y="741" class="body">customer-notification-v1</text>
+    <text x="638" y="766" class="body">Listener valida chave, schema, IDs e tipo.</text>
+    <path d="M889 773 V803" class="line"/>
+    <rect x="622" y="806" width="534" height="150" rx="14" fill="#eaf3ff" stroke="#b9d4ef"/>
+    <text x="638" y="836" class="label">PostgreSQL · lock do cursor por Customer</text>
+    <text x="638" y="868" class="body good">revision ≤ cursor → duplicata; sem novo efeito.</text>
+    <text x="638" y="900" class="body">revision = cursor + 1 → aplica o evento.</text>
+    <text x="638" y="932" class="body bad">Lacuna ou pós-remoção → falha; não salta revisão.</text>
+    <path d="M889 956 V987" class="line"/>
+    <rect x="622" y="990" width="534" height="110" rx="14" fill="#eaf7f0" stroke="#bcdcc8"/>
+    <text x="638" y="1020" class="label">customer_notifications</text>
+    <text x="638" y="1049" class="body">eventId único + efeito + avanço do cursor</text>
+    <text x="638" y="1077" class="body">Disponível em GET /api/notifications.</text>
+    <path d="M889 1100 V1131" class="line"/>
+    <rect x="622" y="1134" width="534" height="56" rx="14" fill="#eaf7f0" stroke="#bcdcc8"/>
+    <text x="638" y="1168" class="ack">Commit PostgreSQL → confirma offset Kafka</text>
+    <text x="44" y="1210" class="small muted">Se o processamento falhar: rollback do banco e tratamento no fluxo 3, sem
+        efeito parcial.
+    </text>
+    <rect x="24" y="1256" width="1152" height="424" rx="14" fill="#fff" stroke="#d9e2ee"/>
+    <circle cx="59" cy="1291" r="17" fill="#e8efff"/>
+    <text x="49" y="1298" class="label">3</text>
+    <text x="88" y="1299" class="heading">Falhas, contadores de tentativas e recuperação</text>
+    <rect x="44" y="1320" width="534" height="190" rx="14" fill="#fff6ed" stroke="#e9cdb1"/>
+    <text x="60" y="1352" class="label">Falha ao publicar Outbox</text>
+    <text x="60" y="1381" class="small">attempts + next_attempt_at persistidos no PostgreSQL.</text>
+    <text x="60" y="1406" class="small">Backoff: 2 → 4 → 8 → … → 300 s.</text>
+    <text x="60" y="1431" class="small">Após 10 falhas: FAILED; bloqueia o mesmo Customer.</text>
+    <text x="60" y="1456" class="small">ADMIN /{eventId}/retry → volta a PENDING.</text>
+    <text x="60" y="1481" class="small">Producer: acks=all + idempotência; pode haver duplicata.</text>
+    <rect x="622" y="1320" width="534" height="190" rx="14" fill="#fff6ed" stroke="#e9cdb1"/>
+    <text x="638" y="1352" class="label">Falha ao consumir · por grupo</text>
+    <text x="638" y="1381" class="small">Tentativa inicial + 3 retries: 1, 2 e 4 s.</text>
+    <text x="638" y="1406" class="small">Contador de entrega; espera na mesma partição.</text>
+    <text x="638" y="1431" class="small">Esgotou → publica na DLT específica do grupo.</text>
+    <text x="638" y="1456" class="small">Offset avança só após confirmação da DLT.</text>
+    <text x="638" y="1481" class="small">Se a DLT falhar, o original fica para nova tentativa.</text>
+    <rect x="44" y="1530" width="534" height="125" rx="14" fill="#fff0ed" stroke="#e6c1b9"/>
+    <text x="60" y="1562" class="label">DLT · a fila de falhas (DLQ) no Kafka</text>
+    <text x="60" y="1591" class="mono">customer.changes.v1.audit.DLT</text>
+    <text x="60" y="1617" class="mono">customer.changes.v1.notification.DLT</text>
+    <text x="60" y="1641" class="small">Só IDs/offsets e envelope mínimo; sem nome/email.</text>
+    <rect x="622" y="1530" width="534" height="125" rx="14" fill="#f1f5fb" stroke="#c8d5ed"/>
+    <text x="638" y="1562" class="label">ADMIN /{eventId}/replay</text>
+    <text x="638" y="1591" class="small">Corrige a causa → evento preservado → tópico original.</text>
+    <text x="638" y="1617" class="small">Replay em ordem; espera o cursor; grupos deduplicam.</text>
+    <text x="638" y="1641" class="small">Falhas de um grupo não impedem o outro de consumir.</text>
+    <rect x="24" y="1704" width="1152" height="186" rx="14" fill="#fff" stroke="#d9e2ee"/>
+    <circle cx="59" cy="1739" r="17" fill="#e8efff"/>
+    <text x="49" y="1746" class="label">4</text>
+    <text x="88" y="1747" class="heading">Observabilidade em todas as fronteiras</text>
+    <text x="44" y="1780" class="label">HTTP + banco + Redis</text>
+    <text x="44" y="1811" class="small">Latência REST/JPA; pool Hikari.</text>
+    <text x="44" y="1838" class="small">Cache: hits, misses e falhas.</text>
+    <text x="431" y="1780" class="label">Outbox + producer</text>
+    <text x="431" y="1811" class="small">Publicações, falhas e duração.</text>
+    <text x="431" y="1838" class="small">Pendentes, FAILED, idade.</text>
+    <text x="812" y="1780" class="label">Consumers + Kafka</text>
+    <text x="812" y="1811" class="small">Criados, duplicatas, retries, DLT.</text>
+    <text x="812" y="1838" class="small">Lag, recuperação, retenção.</text>
+    <text x="44" y="1870" class="small muted">Actuator /metrics exige ADMIN · IDs não são tags de métricas · logs sem
+        payload pessoal.
+    </text>
+    <text x="32" y="1925" class="small muted">¹ HTTPS depende de proxy/TLS na implantação. O Compose local usa HTTP e
+        Kafka PLAINTEXT.
+    </text>
+    <text x="32" y="1949" class="small muted">At-least-once: reentregas são possíveis; PostgreSQL + revisão evitam
+        repetir o efeito de negócio.
+    </text>
+</svg>
