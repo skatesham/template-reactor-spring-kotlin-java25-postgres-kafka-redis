@@ -15,7 +15,7 @@
 [![Redis 8](https://img.shields.io/badge/Redis-8-FF4438?logo=redis&logoColor=white)](compose.yaml)
 [![Kafka 4.1.2](https://img.shields.io/badge/Kafka-4.1.2-231F20?logo=apachekafka&logoColor=white)](compose.yaml)
 
-API modular em **Kotlin + Spring Boot**, com Spring MVC, JPA bloqueante e domínio independente de infraestrutura. O projeto implementa autenticação e um fluxo completo de Customer: **REST → PostgreSQL + Outbox → Kafka → auditoria e notificações**, com cache Redis, idempotência e recuperação de falhas.
+API modular em **Kotlin + Spring Boot**, com WebFlux/Netty, Reactor e R2DBC PostgreSQL e domínio independente de infraestrutura. O projeto implementa autenticação e um fluxo completo de Customer: **REST → PostgreSQL + Outbox → Kafka → auditoria e notificações**, com cache Redis, idempotência e recuperação de falhas.
 
 [Primeira execução](#primeira-execução) · [Features](#features-implementadas) · [Diagrama](#como-o-fluxo-funciona) · [API](#api-e-autenticação) · [Falhas](#retry-dlt-e-recuperação) · [Makefile](#comandos-do-makefile) · [Testes](#testes-e-cobertura)
 
@@ -51,7 +51,7 @@ make run
 1. Verifica os segredos obrigatórios.
 2. Executa `make up`: inicia PostgreSQL, Redis e Kafka e aguarda os healthchecks.
 3. Executa `./gradlew bootRun`.
-4. Durante a inicialização da aplicação, Flyway aplica as migrations e Hibernate valida o schema. A configuração Kafka cria os tópicos necessários; os listeners e jobs iniciam com o contexto Spring.
+4. Durante a inicialização da aplicação, Flyway aplica as migrations via JDBC; o fluxo da aplicação usa o pool R2DBC. A configuração Kafka cria os tópicos necessários; os listeners e jobs iniciam com o contexto Spring.
 
 **Não é necessário executar `make up` separadamente nem criar tópicos manualmente para rodar Customer.** A configuração da aplicação cria estes tópicos, todos com **3 partições e 1 réplica** no ambiente local:
 
@@ -102,7 +102,7 @@ Para encerrar, interrompa a aplicação com `Ctrl+C` e execute `make down`. O Co
 | Autorização | Customer pertence ao sujeito do JWT; acesso de outro usuário retorna 404 |
 | Concorrência | Revisão esperada em PUT/DELETE; alteração desatualizada retorna 409 |
 | Idempotência HTTP | `Idempotency-Key` + proprietário no PostgreSQL; retries de criação não duplicam Customer nem evento |
-| PostgreSQL + Flyway | Perfil, reserva de criação e Outbox gravados na mesma transação; OSIV desabilitado |
+| PostgreSQL + Flyway | Perfil, reserva de criação e Outbox gravados na mesma transação reativa |
 | Redis | Cache de detalhes por ID/revisão; TTL, fallback ao banco e invalidação após commit |
 | Eventos | IDs UUIDv7; contratos versionados, sem nome/email no payload Kafka |
 | Transactional Outbox | Publicação com confirmação, tentativas persistidas e bloqueio de revisões posteriores quando há falha |
@@ -110,9 +110,9 @@ Para encerrar, interrompa a aplicação com `Ctrl+C` e execute `make down`. O Co
 | Auditoria | Registro de fatos em `customer_audit`, com deduplicação e cursor por Customer |
 | Notificações | Inbox interna persistida em `customer_notifications`, consultável pela API |
 | Retry + DLT | Backoff por consumidor, DLT específica do grupo e endpoints ADMIN para recuperação |
-| Observabilidade | Métricas REST/JPA/cache/Outbox/Kafka/consumers; saúde e erros sem dados pessoais |
+| Observabilidade | Métricas REST/R2DBC/cache/Outbox/Kafka/consumers; saúde e erros sem dados pessoais |
 | Retenção | Limpeza de perfis inativos, cache, reservas, eventos e evidências, preservando deduplicação de Customers ativos |
-| Testes | Domínio, aplicação, MockMvc, RestAssured sobre HTTP real e Testcontainers |
+| Testes | Domínio, aplicação, WebTestClient, RestAssured sobre HTTP real e Testcontainers |
 
 As notificações são **internas**: a feature não envia email ou SMS. UUIDs não substituem autorização nem tornam os dados anônimos. Os controles e limites da demonstração estão detalhados no [runbook de Customer](docs/customer-flow.md).
 
@@ -158,7 +158,7 @@ Cada listener valida chave/contrato e delega ao caso de uso. Dentro de uma trans
 | Processamento no consumidor | Tentativa inicial + três retries; 1, 2 e 4 s, mantendo a partição durante o backoff | Publica na DLT do grupo e só avança o offset original após a confirmação desse envio |
 | Publicação na DLT | Se o envio falhar, o original permanece disponível para nova tentativa | O offset não avança como se a recuperação tivesse concluído |
 
-O número de tentativas da Outbox é persistido e sobrevive ao reinício. A contagem de retries do handler Kafka é de execução, por registro, e pode reiniciar após uma queda/reentrega. Ela é diferente dos counters agregados de observabilidade.
+O número de tentativas da Outbox é persistido e sobrevive ao reinício. A contagem de retries do pipeline Reactor de consumo é de execução, por registro, e pode reiniciar após uma queda/reentrega. Ela é diferente dos counters agregados de observabilidade.
 
 As DLTs recebem um envelope mínimo, chave UUID, event ID quando válido e referência ao tópico/partição/offset originais. Não copiam nome, email, payload rejeitado, mensagem de exceção ou stack trace.
 
@@ -203,7 +203,7 @@ Erros usam `application/problem+json`: **400** entrada inválida, **401** autent
 
 | Fronteira | Sinais úteis |
 | --- | --- |
-| REST / persistência | `http.server.requests`, `customer.persistence.duration`, `customer.persistence.failures` e métricas Hikari |
+| REST / persistência | `http.server.requests`, `customer.persistence.duration`, `customer.persistence.failures` e métricas do pool R2DBC |
 | Redis | `customer.cache.requests` com hit/miss e `customer.cache.failures` |
 | Outbox | `customer.outbox.published`, `failures`, `publish.duration`, `pending`, `failed`, `oldest.seconds` |
 | Consumers | `customer.consumer.records` com created/duplicate, `failures` e `dlt`, separados por consumidor |
@@ -211,7 +211,7 @@ Erros usam `application/problem+json`: **400** entrada inválida, **401** autent
 
 Os nomes abreviados na tabela usam o prefixo da respectiva família. Por exemplo, `/actuator/metrics/customer.outbox.pending` retorna o gauge de pendências e exige ADMIN. Os counters medem volumes agregados; não são a reserva de idempotência nem o cursor de ordenação.
 
-Nome/email ficam no perfil e no cache, com finalidade de identificação e contato comercial. Eventos contêm IDs técnicos, revisão, tipo, schema e horário. Logs não recebem tokens, credenciais ou payloads pessoais; erros PostgreSQL/Hibernate são configurados para evitar exposição de valores de constraints. IDs não são tags de métricas.
+Nome/email ficam no perfil e no cache, com finalidade de identificação e contato comercial. Eventos contêm IDs técnicos, revisão, tipo, schema e horário. Logs não recebem tokens, credenciais ou payloads pessoais; erros PostgreSQL/R2DBC são configurados para evitar exposição de valores de constraints. IDs não são tags de métricas.
 
 A política demonstrativa remove Customers sem alteração por 365 dias; evidências e eventos publicados duram 30 dias, e os cursors permanecem durante o ciclo de vida e por 31 dias após a remoção. Kafka/DLT têm retenção de sete dias ou 100 MiB por partição, o que ocorrer primeiro. Pendências/falhas exigem tratamento operacional antes do descarte. O [runbook](docs/customer-flow.md#cache-e-privacidade) explica exceções, expiração de contratos e cuidados com réplicas/backups. Finalidade, fundamento e prazos precisam ser validados pelo responsável antes de produção.
 
@@ -229,7 +229,7 @@ A política demonstrativa remove Customers sem alteração por 365 dias; evidên
 | `make customer-demo` | CRUD e notificações; API deve estar rodando; exige curl/jq/OpenSSL |
 | `make kafka-topics` | Lista tópicos; Kafka deve estar rodando |
 | `make kafka-create-topic TOPIC=events.demo` | Tópico avulso com uma partição; não é necessário para Customer |
-| `make test-http` | Testes MockMvc de Identity, sem Docker |
+| `make test-http` | Testes WebTestClient de Identity, sem Docker |
 | `make test-restassured` | Testes HTTP reais; usa seus próprios containers |
 | `make test-customer` | Domínio, aplicação e integrações de Customer; exige Docker |
 | `make test-integration` | Integrações Identity, Customer e RestAssured; exige Docker |
@@ -248,9 +248,10 @@ Os comandos de build usam `./gradlew`. Rodar o Wrapper diretamente **não carreg
 | --- | --- |
 | `DATABASE_PASSWORD` | Obrigatória; compartilhada com PostgreSQL no Compose |
 | `JWT_SECRET` | Obrigatória; Base64 de pelo menos 32 bytes aleatórios |
-| `DATABASE_URL` / `DATABASE_USERNAME` | `jdbc:postgresql://localhost:5432/mydatabase` / `myuser` |
+| `DATABASE_URL` / `DATABASE_USERNAME` | `r2dbc:postgresql://localhost:5432/mydatabase` / `myuser` |
+| `FLYWAY_DATABASE_URL` | `jdbc:postgresql://localhost:5432/mydatabase`; mesmo banco da URL R2DBC |
 | `DATABASE_POOL_SIZE` | `10` |
-| `POSTGRES_PORT` | `5432`; Make deriva `DATABASE_URL` |
+| `POSTGRES_PORT` | `5432`; Make deriva as URLs R2DBC e Flyway |
 | `REDIS_HOST` / `REDIS_PORT` / `REDIS_PASSWORD` | `localhost` / `6379` / vazia |
 | `KAFKA_PORT` / `KAFKA_BOOTSTRAP_SERVERS` | `9092` / `localhost:9092`; Make deriva a porta |
 | `SERVER_PORT` | `8080` |
@@ -265,21 +266,42 @@ Os comandos de build usam `./gradlew`. Rodar o Wrapper diretamente **não carreg
 
 Para usar serviços externos, exporte endereços/segredos e execute `./gradlew bootRun`; `make run` também inicia o Compose local. O gerenciamento de Compose pelo Spring Boot pode ser ativado com `DOCKER_COMPOSE_ENABLED=true`, mas a sequência recomendada acima usa GNU Make.
 
+## Execução reativa
+
+Endpoints, casos de uso, acesso a PostgreSQL e Redis compõem `Mono`/`Flux` sem
+`block()` nem subscriptions manuais. As portas reativas ficam em
+`application/port/`, preservando aggregates e invariantes de domínio independentes
+de Reactor. `@Transactional` usa `R2dbcTransactionManager` e o contexto Reactor;
+SQL do aggregate, reserva, outbox e cursors participa da mesma conexão transacional.
+
+Kafka mantém Spring for Apache Kafka, com `Mono.fromFuture` no produtor e
+listeners que retornam `Mono<Void>`. Cada consumidor recebe um registro por poll;
+o container confirma o offset após o commit ou confirmação da DLT. Retry usa
+Reactor, mantendo a partição pausada enquanto há trabalho pendente. O envio Kafka
+pode aguardar metadata/buffer na API do cliente e fica em `boundedElastic`.
+O [Reactor Kafka foi descontinuado](https://spring.io/blog/2025/05/20/reactor-kafka-discontinued/).
+
+Flyway mantém JDBC apenas durante as migrations de inicialização. PBKDF2 usa
+`boundedElastic` para não ocupar o event loop. Scrapes de métricas leem valores
+em memória, atualizados periodicamente por SQL reativo. Os testes usam
+`StepVerifier`, `WebTestClient` e Testcontainers; chamadas `block()` são limitadas
+às threads JUnit para preparar fixtures e verificar resultados via R2DBC.
+
 ## Arquitetura e ferramentas
 
 ```text
 src/main/kotlin/com/kotlin/template/
 ├── TemplateApplication.kt
 ├── identity/       # Cadastro, login e JWT
-├── customer/       # Aggregate, casos de uso, REST, JPA, Redis, Outbox e Kafka
+├── customer/       # Aggregate, casos de uso, REST, R2DBC, Redis, Outbox e Kafka
 ├── audit/          # Listener, caso de uso e persistência da auditoria
 ├── notification/   # Listener, persistência e API da inbox
 └── shared/         # OpenAPI, scheduling e mecanismos técnicos reutilizados
 
 # Nos contextos, conforme a responsabilidade:
-<context>/domain/          # Invariantes, eventos e repository ports; sem Spring/JPA
+<context>/domain/          # Invariantes e eventos; sem Spring/Reactor
 <context>/application/     # usecase/<intenção>, port, result, contract e exception
-<context>/infrastructure/  # persistence/{entity,repository,adapter}, cache, messaging e config
+<context>/infrastructure/  # persistence/adapter, cache, messaging e config
 <context>/interfaces/      # rest/{request,response}, listeners e jobs do contexto
 
 src/main/resources/db/migration/
@@ -292,12 +314,12 @@ Os contextos se comunicam por contratos de aplicação/eventos, sem importar rep
 | Ferramentas | Uso |
 | --- | --- |
 | Kotlin 2.3.21 / JDK 25 / Spring Boot 4.1.1 | Linguagem, toolchain e runtime |
-| MVC / Validation / Security / OAuth2 Resource Server | HTTP, contratos, autenticação e autorização |
-| JPA / Hibernate / PostgreSQL 18 / Flyway | Persistência e migrations |
-| Redis 8 / Spring Data Redis | Cache |
+| WebFlux / Validation / Security / OAuth2 Resource Server | HTTP, contratos, autenticação e autorização |
+| Reactor / Spring Data R2DBC / PostgreSQL 18 / Flyway | Persistência e migrations |
+| Redis 8 / Spring Data Redis Reactive | Cache |
 | Kafka 4.1.2 / Spring for Apache Kafka | Eventos, grupos de consumo e DLT |
 | Actuator / Micrometer / springdoc 3.1.0 | Observabilidade e documentação OpenAPI |
-| JUnit 5 / MockMvc / RestAssured 6.0.1 / Testcontainers | Testes unitários, HTTP e integrações reais |
+| JUnit 5 / WebTestClient / RestAssured 6.0.1 / Testcontainers | Testes unitários, HTTP e integrações reais |
 | JaCoCo 0.8.15 | Cobertura, relatórios e badge local |
 | Gradle Wrapper / GNU Make / Docker Compose | Build e operação local |
 | GraalVM Build Tools / REST Docs / Asciidoctor | Suporte adicional de build disponível |

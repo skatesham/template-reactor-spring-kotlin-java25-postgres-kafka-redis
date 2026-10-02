@@ -149,7 +149,7 @@
     <text x="49" y="1746" class="label">4</text>
     <text x="88" y="1747" class="heading">Observabilidade em todas as fronteiras</text>
     <text x="44" y="1780" class="label">HTTP + banco + Redis</text>
-    <text x="44" y="1811" class="small">Latência REST/JPA; pool Hikari.</text>
+    <text x="44" y="1811" class="small">Latência REST/R2DBC; pool reativo.</text>
     <text x="44" y="1838" class="small">Cache: hits, misses e falhas.</text>
     <text x="431" y="1780" class="label">Outbox + producer</text>
     <text x="431" y="1811" class="small">Publicações, falhas e duração.</text>

@@ -28,7 +28,8 @@ A estratégia segue as fronteiras arquiteturais.
 
 ## REST
 
-- Spring MVC tests;
+- WebFlux com WebTestClient e HTTP real com RestAssured;
+- StepVerifier para signals, cancelamento e composição reativa;
 - validação de contratos HTTP.
 
 Regra principal:
@@ -43,7 +44,7 @@ menos infraestrutura deve ser necessária para testar.
 `ArchitectureTests` inspeciona dependências no bytecode de produção para verificar
 domínio independente, aplicação sem infraestrutura/interfaces, REST sem acesso
 a persistência/modelos de domínio, acesso entre contextos pela API de aplicação
-e ausência de ciclos. Executar sem Docker:
+ausência de ciclos, chamadas bloqueantes e subscriptions manuais. Executar sem Docker:
 
 ```bash
 ./gradlew test --tests 'com.kotlin.template.architecture.ArchitectureTests'

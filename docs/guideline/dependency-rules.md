@@ -14,13 +14,13 @@ domain           → domain
 
 ```text
 domain → Spring
-domain → JPA/Hibernate
+domain → Spring/Reactor/R2DBC
 domain → Kafka
 domain → Redis
 domain → REST
 
 application → Controller
-application → JpaEntity
+application → SQL Row
 application → KafkaTemplate
 application → RedisTemplate
 

@@ -10,12 +10,12 @@ import io.swagger.v3.oas.annotations.media.Schema
 import io.swagger.v3.oas.annotations.responses.ApiResponse
 import io.swagger.v3.oas.annotations.responses.ApiResponses
 import io.swagger.v3.oas.annotations.tags.Tag
+import java.util.UUID
 import org.springframework.http.ProblemDetail
 import org.springframework.security.core.annotation.AuthenticationPrincipal
 import org.springframework.security.oauth2.jwt.Jwt
 import org.springframework.web.bind.annotation.GetMapping
 import org.springframework.web.bind.annotation.RestController
-import java.util.UUID
 
 @RestController
 @Tag(name = "Notificações", description = "Inbox de alterações de customers do usuário autenticado.")
@@ -42,5 +42,5 @@ class NotificationController(private val find: FindNotifications) {
         ),
     )
     fun find(@Parameter(hidden = true) @AuthenticationPrincipal jwt: Jwt) =
-        find.execute(UUID.fromString(jwt.subject)).map(NotificationResponse::from)
+        find.execute(UUID.fromString(jwt.subject)).map(NotificationResponse::from).collectList()
 }

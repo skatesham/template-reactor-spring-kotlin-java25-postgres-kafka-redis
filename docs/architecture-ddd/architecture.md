@@ -45,7 +45,7 @@ interfaces ───→ application ───→ domain
 infrastructure ──────┘
 ```
 
-O `domain` não depende de Spring, JPA, Kafka, Redis, HTTP ou qualquer tecnologia externa.
+O `domain` não depende de Spring, Reactor, R2DBC, Kafka, Redis, HTTP ou qualquer tecnologia externa.
 
 ## Documentação detalhada
 
@@ -53,7 +53,7 @@ O `domain` não depende de Spring, JPA, Kafka, Redis, HTTP ou qualquer tecnologi
 - [Empacotamento e Estrutura](references/packaging.md)
 - [Padrões de Projeto](references/design-patterns.md)
 - [Application Layer e Use Cases](references/application-layer.md)
-- [Persistência, JPA e PostgreSQL](references/persistence.md)
+- [Persistência reativa e PostgreSQL](references/persistence.md)
 - [Redis e Cache](references/cache.md)
 - [Kafka e Eventos](references/messaging.md)
 - [REST e DTOs](references/interfaces.md)

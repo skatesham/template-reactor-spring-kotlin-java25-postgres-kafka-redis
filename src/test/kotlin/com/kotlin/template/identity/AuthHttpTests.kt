@@ -1,10 +1,10 @@
 package com.kotlin.template.identity
 
+import com.kotlin.template.identity.application.port.UserRepository
 import com.kotlin.template.identity.application.usecase.currentuser.CurrentUser
 import com.kotlin.template.identity.application.usecase.login.Login
 import com.kotlin.template.identity.application.usecase.signup.Signup
 import com.kotlin.template.identity.domain.model.User
-import com.kotlin.template.identity.domain.repository.UserRepository
 import com.kotlin.template.identity.infrastructure.security.JwtAccessTokenIssuer
 import com.kotlin.template.identity.infrastructure.security.SecurityConfig
 import com.kotlin.template.identity.infrastructure.security.SpringPasswordHasher
@@ -17,7 +17,7 @@ import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.TestConfiguration
-import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest
+import org.springframework.boot.webflux.test.autoconfigure.WebFluxTest
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Import
 import org.springframework.http.MediaType
@@ -26,12 +26,11 @@ import org.springframework.security.oauth2.jwt.JwsHeader
 import org.springframework.security.oauth2.jwt.JwtClaimsSet
 import org.springframework.security.oauth2.jwt.JwtEncoder
 import org.springframework.security.oauth2.jwt.JwtEncoderParameters
-import org.springframework.test.web.servlet.MockMvc
-import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*
-import org.springframework.test.web.servlet.result.MockMvcResultMatchers.*
+import org.springframework.test.web.reactive.server.WebTestClient
+import reactor.core.publisher.Mono
 import tools.jackson.databind.ObjectMapper
 
-@WebMvcTest(
+@WebFluxTest(
     controllers = [AuthController::class, UserController::class], properties = [
         "app.security.jwt.secret=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
         "app.security.jwt.issuer=test-template",
@@ -45,7 +44,7 @@ import tools.jackson.databind.ObjectMapper
 )
 class AuthHttpTests {
     @Autowired
-    lateinit var mvc: MockMvc
+    lateinit var client: WebTestClient
     @Autowired
     lateinit var mapper: ObjectMapper
     @Autowired
@@ -60,27 +59,24 @@ class AuthHttpTests {
 
     @Test
     fun `signup login and bearer access never expose password`() {
-        val created = mvc.perform(
-            post("/api/auth/signup").contentType(MediaType.APPLICATION_JSON)
-                .content("""{"name":" Maria ","email":"MARIA@example.com","password":"valid-password"}""")
-        )
-            .andExpect(status().isCreated).andExpect(jsonPath("$.name").value("Maria"))
-            .andExpect(jsonPath("$.email").value("maria@example.com"))
-            .andExpect(jsonPath("$.roles[0]").value("USER"))
-            .andExpect(jsonPath("$.password").doesNotExist()).andExpect(jsonPath("$.passwordHash").doesNotExist())
-            .andReturn().response.contentAsString
+        val created = client.post().uri("/api/auth/signup").contentType(MediaType.APPLICATION_JSON)
+                .bodyValue("""{"name":" Maria ","email":"MARIA@example.com","password":"valid-password"}""").exchange()
+            .expectStatus().isCreated.expectBody().jsonPath("$.name").isEqualTo("Maria")
+            .jsonPath("$.email").isEqualTo("maria@example.com")
+            .jsonPath("$.roles[0]").isEqualTo("USER")
+            .jsonPath("$.password").doesNotExist().jsonPath("$.passwordHash").doesNotExist()
+            .returnResult().responseBody!!.toString(Charsets.UTF_8)
         val token = login("maria@example.com", "valid-password")
-        mvc.perform(get("/api/users/me").header("Authorization", "Bearer $token"))
-            .andExpect(status().isOk).andExpect(content().json(created))
+        client.get().uri("/api/users/me").header("Authorization", "Bearer $token").exchange()
+            .expectStatus().isOk.expectBody().json(created)
         kotlin.test.assertNotEquals("valid-password", users.values.values.single().passwordHash)
     }
 
     @Test
     fun `long multibyte passwords are accepted without truncation`() {
         val password = "ç".repeat(100) + "original"
-        mvc.perform(
-            post("/api/auth/signup").contentType(MediaType.APPLICATION_JSON)
-                .content(
+        client.post().uri("/api/auth/signup").contentType(MediaType.APPLICATION_JSON)
+                .bodyValue(
                     mapper.writeValueAsString(
                         mapOf(
                             "name" to "Maria",
@@ -88,62 +84,51 @@ class AuthHttpTests {
                             "password" to password
                         )
                     )
-                )
-        )
-            .andExpect(status().isCreated)
+                ).exchange()
+            .expectStatus().isCreated
         login("maria@example.com", password)
-        mvc.perform(
-            post("/api/auth/login").contentType(MediaType.APPLICATION_JSON)
-                .content(
+        client.post().uri("/api/auth/login").contentType(MediaType.APPLICATION_JSON)
+                .bodyValue(
                     mapper.writeValueAsString(
                         mapOf(
                             "email" to "maria@example.com",
                             "password" to "ç".repeat(100) + "modified"
                         )
                     )
-                )
-        )
-            .andExpect(status().isUnauthorized)
+                ).exchange()
+            .expectStatus().isUnauthorized
     }
 
     @Test
     fun `duplicate email is case insensitive`() {
         register()
-        mvc.perform(
-            post("/api/auth/signup").contentType(MediaType.APPLICATION_JSON)
-                .content("""{"name":"Another","email":"MARIA@example.com","password":"valid-password"}""")
-        )
-            .andExpect(status().isConflict)
+        client.post().uri("/api/auth/signup").contentType(MediaType.APPLICATION_JSON)
+                .bodyValue("""{"name":"Another","email":"MARIA@example.com","password":"valid-password"}""").exchange()
+            .expectStatus().isEqualTo(409)
     }
 
     @Test
     fun `validation does not expose rejected password`() {
-        mvc.perform(
-            post("/api/auth/signup").contentType(MediaType.APPLICATION_JSON)
-                .content("""{"name":" ","email":"invalid","password":"short"}""")
-        )
-            .andExpect(status().isBadRequest).andExpect(jsonPath("$.errors").isArray)
-            .andExpect(content().string(org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("short"))))
+        client.post().uri("/api/auth/signup").contentType(MediaType.APPLICATION_JSON)
+                .bodyValue("""{"name":" ","email":"invalid","password":"short"}""").exchange()
+            .expectStatus().isBadRequest.expectBody().jsonPath("$.errors").isArray
+            .consumeWith { org.hamcrest.MatcherAssert.assertThat(String(it.responseBody!!), org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("short"))) }
     }
 
     @Test
     fun `roles cannot be assigned through signup`() {
-        mvc.perform(
-            post("/api/auth/signup").contentType(MediaType.APPLICATION_JSON)
-                .content("""{"name":"Maria","email":"maria@example.com","password":"valid-password","roles":["ADMIN"]}""")
-        )
-            .andExpect(status().isBadRequest)
+        client.post().uri("/api/auth/signup").contentType(MediaType.APPLICATION_JSON)
+                .bodyValue("""{"name":"Maria","email":"maria@example.com","password":"valid-password","roles":["ADMIN"]}""").exchange()
+            .expectStatus().isBadRequest
     }
 
     @Test
     fun `invalid and unknown credentials return same error`() {
         register()
         for (email in listOf("maria@example.com", "missing@example.com")) {
-            mvc.perform(
-                post("/api/auth/login").contentType(MediaType.APPLICATION_JSON)
-                    .content("""{"email":"$email","password":"incorrect-password"}""")
-            )
-                .andExpect(status().isUnauthorized).andExpect(jsonPath("$.detail").value("Email ou senha inválidos."))
+            client.post().uri("/api/auth/login").contentType(MediaType.APPLICATION_JSON)
+                    .bodyValue("""{"email":"$email","password":"incorrect-password"}""").exchange()
+                .expectStatus().isUnauthorized.expectBody().jsonPath("$.detail").isEqualTo("Email ou senha inválidos.")
         }
     }
 
@@ -151,60 +136,50 @@ class AuthHttpTests {
     fun `missing tampered expired and wrong issuer tokens are rejected`() {
         register()
         val token = login("maria@example.com", "valid-password")
-        mvc.perform(get("/api/users/me")).andExpect(status().isUnauthorized)
+        client.get().uri("/api/users/me").exchange().expectStatus().isUnauthorized
         val now = Instant.now()
         val subject = users.values.values.single().id.toString()
         val expired = encode(subject, "test-template", now.minusSeconds(3600), now.minusSeconds(600))
         val wrongIssuer = encode(subject, "another-issuer", now, now.plusSeconds(600))
         for (invalid in listOf(token.dropLast(8) + "tampered", expired, wrongIssuer)) {
-            mvc.perform(get("/api/users/me").header("Authorization", "Bearer $invalid"))
-                .andExpect(status().isUnauthorized)
-                .andExpect(content().contentTypeCompatibleWith("application/problem+json"))
+            client.get().uri("/api/users/me").header("Authorization", "Bearer $invalid").exchange()
+                .expectStatus().isUnauthorized
+                .expectHeader().contentTypeCompatibleWith("application/problem+json")
         }
     }
 
     @Test
     fun `user role cannot access administrative actuator endpoint`() {
         register()
-        mvc.perform(
-            get("/actuator/info").header(
+        client.get().uri("/actuator/info").header(
                 "Authorization",
                 "Bearer ${login("maria@example.com", "valid-password")}"
-            )
-        )
-            .andExpect(status().isForbidden)
+            ).exchange()
+            .expectStatus().isForbidden
     }
 
     @Test
     fun `cors only permits configured origins`() {
-        mvc.perform(
-            options("/api/auth/login").header("Origin", "https://trusted.example")
+        client.options().uri("http://localhost/api/auth/login").header("Origin", "https://trusted.example")
                 .header("Access-Control-Request-Method", "POST")
-                .header("Access-Control-Request-Headers", "Content-Type")
-        )
-            .andExpect(status().isOk)
-            .andExpect(header().string("Access-Control-Allow-Origin", "https://trusted.example"))
-        mvc.perform(
-            options("/api/auth/login").header("Origin", "https://untrusted.example")
-                .header("Access-Control-Request-Method", "POST")
-        ).andExpect(status().isForbidden)
+                .header("Access-Control-Request-Headers", "Content-Type").exchange()
+            .expectStatus().isOk
+            .expectHeader().valueEquals("Access-Control-Allow-Origin", "https://trusted.example")
+        client.options().uri("http://localhost/api/auth/login").header("Origin", "https://untrusted.example")
+                .header("Access-Control-Request-Method", "POST").exchange().expectStatus().isForbidden
     }
 
     private fun register() {
-        mvc.perform(
-            post("/api/auth/signup").contentType(MediaType.APPLICATION_JSON)
-                .content("""{"name":"Maria","email":"maria@example.com","password":"valid-password"}""")
-        )
-            .andExpect(status().isCreated)
+        client.post().uri("/api/auth/signup").contentType(MediaType.APPLICATION_JSON)
+                .bodyValue("""{"name":"Maria","email":"maria@example.com","password":"valid-password"}""").exchange()
+            .expectStatus().isCreated
     }
 
     private fun login(email: String, password: String): String {
-        val response = mvc.perform(
-            post("/api/auth/login").contentType(MediaType.APPLICATION_JSON)
-                .content(mapper.writeValueAsString(mapOf("email" to email, "password" to password)))
-        )
-            .andExpect(status().isOk).andExpect(jsonPath("$.tokenType").value("Bearer"))
-            .andExpect(jsonPath("$.expiresIn").value(900)).andReturn().response.contentAsString
+        val response = client.post().uri("/api/auth/login").contentType(MediaType.APPLICATION_JSON)
+                .bodyValue(mapper.writeValueAsString(mapOf("email" to email, "password" to password))).exchange()
+            .expectStatus().isOk.expectBody().jsonPath("$.tokenType").isEqualTo("Bearer")
+            .jsonPath("$.expiresIn").isEqualTo(900).returnResult().responseBody!!.toString(Charsets.UTF_8)
         return mapper.readTree(response).get("accessToken").asString()
     }
 
@@ -225,10 +200,8 @@ class AuthHttpTests {
 
     class MemoryUsers : UserRepository {
         val values = mutableMapOf<UUID, User>()
-        override fun findByEmail(email: String) = values.values.firstOrNull { it.email == email }
-        override fun findById(id: UUID) = values[id]
-        override fun create(user: User): User {
-            values[user.id] = user; return user
-        }
+        override fun findByEmail(email: String): Mono<User> = Mono.defer { Mono.justOrEmpty(values.values.firstOrNull { it.email == email }) }
+        override fun findById(id: UUID): Mono<User> = Mono.defer { Mono.justOrEmpty(values[id]) }
+        override fun create(user: User): Mono<User> = Mono.fromCallable { values[user.id] = user; user }
     }
 }

@@ -1,9 +1,9 @@
 # Customer: execução e operação
 
-Este exemplo segue a skill local e as referências de arquitetura. `customer` contém o domínio, os casos de uso, JPA,
+Este exemplo segue a skill local e as referências de arquitetura. `customer` contém o domínio, os casos de uso, R2DBC,
 Redis e Outbox; `audit` e `notification` recebem o contrato público de aplicação `CustomerChange`, sem acessar
-repositórios internos de Customer. Spring MVC e JPA são bloqueantes; as transações ficam nos casos de uso, com OSIV
-desabilitado.
+repositórios internos de Customer. WebFlux e R2DBC compõem pipelines Reactor; as transações reativas ficam nos casos de uso.
+Portas reativas pertencem à aplicação; o domínio não depende de Reactor.
 
 ## Executar
 
@@ -158,7 +158,7 @@ tabela não elimina automaticamente essas cópias.
 ## Observabilidade e testes
 
 Actuator expõe saúde, info e métricas; métricas exigem ADMIN. REST usa `http.server.requests`, operações de perfil usam
-`customer.persistence.duration` e conexões usam métricas Hikari, Kafka usa as observações de producer/listener e
+`customer.persistence.duration` e conexões usam métricas do pool R2DBC, Kafka usa as observações de producer/listener e
 métricas de clientes. A feature registra hits/misses/falhas de cache, publicação/falhas/tempo da Outbox, quantidade
 pendente/FAILED e idade do mais antigo, resultados/deduplicação/falhas/DLT por consumidor, recuperação e execução de
 retenção. IDs e mensagens não são tags de métricas. Logs de publicação usam somente event ID, classe do erro e
@@ -173,7 +173,7 @@ falhas contínuas de cache. Verifique também lag dos grupos Kafka, saúde Postg
 HTTP do endpoint Actuator de counters seguem os nomes fornecidos ao Micrometer.
 
 Os testes usam fixtures sintéticas, JDK 25 e PostgreSQL/Redis/Kafka independentes via Testcontainers. Incluem domínio
-sem Spring, casos de uso com portas substituídas, HTTP com JWT real, rollback de JPA + SQL Outbox,
+sem Spring, casos de uso com portas substituídas, HTTP com JWT real, rollback de R2DBC + SQL Outbox,
 duplicidade/concorrência, cache hit/TTL/corrupção/invalidação, pause/unpause reais de Redis/Kafka, retry/DLT de um
 consumidor sem interromper o outro, replay ordenado e retenção de perfis.
 

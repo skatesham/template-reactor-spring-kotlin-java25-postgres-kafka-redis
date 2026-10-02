@@ -1,11 +1,10 @@
 package com.kotlin.template.customer.interfaces.rest
 
 import com.kotlin.template.customer.application.exception.CustomerCreationConflict
+import com.kotlin.template.customer.application.exception.CustomerDeliveryUnavailable
 import com.kotlin.template.customer.application.exception.CustomerEmailAlreadyRegistered
 import com.kotlin.template.customer.application.exception.CustomerNotFound
 import com.kotlin.template.customer.domain.exception.CustomerRevisionConflict
-import java.util.concurrent.ExecutionException
-import java.util.concurrent.TimeoutException
 import org.springframework.dao.DataAccessException
 import org.springframework.http.HttpStatus
 import org.springframework.http.ProblemDetail
@@ -34,8 +33,7 @@ class CustomerExceptionHandler {
     @ExceptionHandler(
         DataAccessException::class,
         TransactionException::class,
-        ExecutionException::class,
-        TimeoutException::class
+        CustomerDeliveryUnavailable::class
     )
     fun unavailable() =
         ProblemDetail.forStatusAndDetail(HttpStatus.SERVICE_UNAVAILABLE, "Serviço temporariamente indisponível.")

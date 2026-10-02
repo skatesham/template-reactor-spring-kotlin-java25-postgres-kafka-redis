@@ -36,7 +36,7 @@ Controller deve:
 
 Controller não deve:
 
-- acessar JPA diretamente;
+- executar SQL R2DBC diretamente;
 - acessar Repository diretamente;
 - conter regra de negócio;
 - publicar Kafka;
@@ -49,7 +49,7 @@ DTO HTTP é contrato de interface.
 Não reutilizar:
 
 ```text
-JpaEntity
+SQL Row
 Domain Entity
 Kafka Message
 ```

@@ -50,7 +50,7 @@ Implementações técnicas adaptam interfaces internas.
 ```text
 OrderRepository
     ↑
-JpaOrderRepository
+R2dbcOrderRepository
 ```
 
 ```text

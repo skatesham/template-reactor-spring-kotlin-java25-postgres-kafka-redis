@@ -1,7 +1,5 @@
 package com.kotlin.template.identity.infrastructure.security
 
-import jakarta.servlet.DispatcherType
-import jakarta.servlet.http.HttpServletResponse
 import java.util.*
 import javax.crypto.SecretKey
 import javax.crypto.spec.SecretKeySpec
@@ -10,27 +8,32 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.http.HttpMethod
-import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity
-import org.springframework.security.config.annotation.web.builders.HttpSecurity
-import org.springframework.security.config.http.SessionCreationPolicy
+import org.springframework.security.config.annotation.method.configuration.EnableReactiveMethodSecurity
+import org.springframework.security.config.web.server.ServerHttpSecurity
 import org.springframework.security.crypto.password.DelegatingPasswordEncoder
 import org.springframework.security.crypto.password.PasswordEncoder
 import org.springframework.security.crypto.password.Pbkdf2PasswordEncoder
 import org.springframework.security.oauth2.jose.jws.MacAlgorithm
 import org.springframework.security.oauth2.jwt.*
-import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationConverter
 import org.springframework.security.oauth2.server.resource.authentication.JwtGrantedAuthoritiesConverter
-import org.springframework.security.web.AuthenticationEntryPoint
-import org.springframework.security.web.SecurityFilterChain
-import org.springframework.security.web.access.AccessDeniedHandler
+import org.springframework.security.oauth2.server.resource.authentication.ReactiveJwtAuthenticationConverter
+import org.springframework.security.oauth2.server.resource.authentication.ReactiveJwtGrantedAuthoritiesConverterAdapter
+import org.springframework.security.web.server.SecurityWebFilterChain
+import org.springframework.security.web.server.ServerAuthenticationEntryPoint
+import org.springframework.security.web.server.authorization.ServerAccessDeniedHandler
+import org.springframework.security.web.server.context.NoOpServerSecurityContextRepository
+import org.springframework.security.web.server.savedrequest.NoOpServerRequestCache
 import org.springframework.web.cors.CorsConfiguration
-import org.springframework.web.cors.CorsConfigurationSource
-import org.springframework.web.cors.UrlBasedCorsConfigurationSource
+import org.springframework.web.cors.reactive.CorsConfigurationSource
+import org.springframework.web.cors.reactive.UrlBasedCorsConfigurationSource
+import org.springframework.web.server.ServerWebExchange
+import reactor.core.publisher.Mono
 
 @Configuration(proxyBeanMethods = false)
-@EnableMethodSecurity
+@EnableReactiveMethodSecurity
 @EnableConfigurationProperties(JwtProperties::class, CorsProperties::class)
 class SecurityConfig {
+
     @Bean
     fun passwordEncoder(): PasswordEncoder =
         DelegatingPasswordEncoder("pbkdf2", mapOf("pbkdf2" to Pbkdf2PasswordEncoder.defaultsForSpringSecurity_v5_8()))
@@ -50,8 +53,8 @@ class SecurityConfig {
     fun jwtEncoder(key: SecretKey): JwtEncoder = NimbusJwtEncoder.withSecretKey(key).build()
 
     @Bean
-    fun jwtDecoder(key: SecretKey, properties: JwtProperties): JwtDecoder =
-        NimbusJwtDecoder.withSecretKey(key).macAlgorithm(MacAlgorithm.HS256).build().apply {
+    fun jwtDecoder(key: SecretKey, properties: JwtProperties): ReactiveJwtDecoder =
+        NimbusReactiveJwtDecoder.withSecretKey(key).macAlgorithm(MacAlgorithm.HS256).build().apply {
             setJwtValidator(JwtValidators.createDefaultWithIssuer(properties.issuer))
         }
 
@@ -68,58 +71,43 @@ class SecurityConfig {
     }
 
     @Bean
-    fun securityFilterChain(
-        http: HttpSecurity,
-        @Qualifier("corsConfigurationSource") cors: CorsConfigurationSource,
-    ): SecurityFilterChain {
-        val unauthorized = AuthenticationEntryPoint { _, response, _ ->
-            response.setHeader("WWW-Authenticate", "Bearer")
-            writeProblem(response, 401, "Unauthorized", "Autenticação necessária ou token inválido.")
+    fun securityFilterChain(http: ServerHttpSecurity,
+        @Qualifier("corsConfigurationSource") cors: CorsConfigurationSource): SecurityWebFilterChain {
+        val unauthorized = ServerAuthenticationEntryPoint { exchange, _ ->
+            exchange.response.headers.set("WWW-Authenticate", "Bearer")
+            writeProblem(exchange, 401, "Unauthorized", "Autenticação necessária ou token inválido.")
         }
-        val forbidden = AccessDeniedHandler { _, response, _ ->
-            writeProblem(response, 403, "Forbidden", "Acesso não permitido.")
+        val forbidden = ServerAccessDeniedHandler { exchange, _ ->
+            writeProblem(exchange, 403, "Forbidden", "Acesso não permitido.")
         }
         val authorities = JwtGrantedAuthoritiesConverter().apply {
-            setAuthoritiesClaimName("roles")
-            setAuthorityPrefix("ROLE_")
+            setAuthoritiesClaimName("roles"); setAuthorityPrefix("ROLE_")
         }
-        val converter = JwtAuthenticationConverter().apply { setJwtGrantedAuthoritiesConverter(authorities) }
-        return http
-            // API stateless: autenticação somente pelo header Bearer, sem cookies de sessão.
-            .csrf { it.disable() }
-            .cors { it.configurationSource(cors) }
-            .sessionManagement { it.sessionCreationPolicy(SessionCreationPolicy.STATELESS) }
-            .requestCache { it.disable() }
-            .httpBasic { it.disable() }
-            .formLogin { it.disable() }
-            .logout { it.disable() }
-            .authorizeHttpRequests {
-                it.dispatcherTypeMatchers(DispatcherType.ERROR).permitAll()
-                    .requestMatchers(HttpMethod.POST, "/api/auth/signup", "/api/auth/login").permitAll()
-                    .requestMatchers(
-                        HttpMethod.GET,
-                        "/v3/api-docs",
-                        "/v3/api-docs/**",
-                        "/swagger-ui.html",
-                        "/swagger-ui/**",
-                        "/actuator/health",
-                        "/actuator/health/**"
-                    ).permitAll()
-                    .requestMatchers("/actuator/**").hasRole("ADMIN")
-                    .anyRequest().authenticated()
-            }
-            .exceptionHandling { it.authenticationEntryPoint(unauthorized).accessDeniedHandler(forbidden) }
+        val converter = ReactiveJwtAuthenticationConverter().apply {
+            setJwtGrantedAuthoritiesConverter(ReactiveJwtGrantedAuthoritiesConverterAdapter(authorities))
+        }
+        return http.csrf { it.disable() }.cors { it.configurationSource(cors) }
+            .securityContextRepository(NoOpServerSecurityContextRepository.getInstance())
+            .requestCache { it.requestCache(NoOpServerRequestCache.getInstance()) }
+            .httpBasic { it.disable() }.formLogin { it.disable() }.logout { it.disable() }
+            .authorizeExchange {
+                it.pathMatchers(HttpMethod.POST, "/api/auth/signup", "/api/auth/login").permitAll()
+                    .pathMatchers(HttpMethod.GET, "/v3/api-docs", "/v3/api-docs/**", "/swagger-ui.html",
+                        "/swagger-ui/**", "/actuator/health", "/actuator/health/**").permitAll()
+                    .pathMatchers("/api/admin/**", "/actuator/**").hasRole("ADMIN")
+                    .anyExchange().authenticated()
+            }.exceptionHandling { it.authenticationEntryPoint(unauthorized).accessDeniedHandler(forbidden) }
             .oauth2ResourceServer {
                 it.jwt { jwt -> jwt.jwtAuthenticationConverter(converter) }
                     .authenticationEntryPoint(unauthorized).accessDeniedHandler(forbidden)
-            }
-            .build()
+            }.build()
     }
 
-    private fun writeProblem(response: HttpServletResponse, status: Int, title: String, detail: String) {
-        response.status = status
-        response.contentType = "application/problem+json"
-        response.characterEncoding = "UTF-8"
-        response.writer.write("""{"type":"about:blank","title":"$title","status":$status,"detail":"$detail"}""")
+    private fun writeProblem(exchange: ServerWebExchange, status: Int, title: String, detail: String): Mono<Void> {
+        val response = exchange.response
+        response.statusCode = org.springframework.http.HttpStatusCode.valueOf(status)
+        response.headers.contentType = org.springframework.http.MediaType.APPLICATION_PROBLEM_JSON
+        val bytes = """{"type":"about:blank","title":"$title","status":$status,"detail":"$detail"}""".toByteArray(Charsets.UTF_8)
+        return response.writeWith(Mono.just(response.bufferFactory().wrap(bytes)))
     }
 }

@@ -40,12 +40,13 @@ class ConfirmOrder(
     private val repository: OrderRepository
 ) {
     @Transactional
-    fun execute(command: ConfirmOrderCommand) {
-        val order = repository.findById(command.orderId)
-            ?: throw OrderNotFound(command.orderId)
-
-        order.confirm()
-        repository.save(order)
+    fun execute(command: ConfirmOrderCommand): Mono<Void> = Mono.defer {
+        repository.findById(command.orderId)
+            .switchIfEmpty(Mono.error(OrderNotFound(command.orderId)))
+            .flatMap { order ->
+                order.confirm()
+                repository.save(order)
+            }
     }
 }
 ```
@@ -57,3 +58,8 @@ A Application Layer coordena.
 O Domain decide.
 
 Regras de negócio que pertencem ao Aggregate não devem ser movidas para Use Cases apenas para simplificar entidades.
+
+Portas reativas de persistência ficam em `application/port/`. O domínio permanece
+síncrono e independente de Reactor; a aplicação compõe `Mono`/`Flux` e usa a
+transação R2DBC. O publisher retornado deve incluir todas as operações; não
+chamar `block()` ou `subscribe()` no caso de uso.

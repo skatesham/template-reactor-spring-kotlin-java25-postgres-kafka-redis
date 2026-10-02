@@ -50,9 +50,9 @@
         <text x="58" y="187" fill="#8f92ad" font-size="14">Kotlin · Spring Boot · PostgreSQL · Redis · Kafka</text>
         <g transform="translate(58 224)" font-size="12" font-weight="600">
             <rect width="108" height="32" rx="8" fill="#302242" stroke="#65417b"/>
-            <text x="54" y="21" fill="#e3caff" text-anchor="middle">Spring MVC</text>
+            <text x="54" y="21" fill="#e3caff" text-anchor="middle">WebFlux</text>
             <rect x="120" width="88" height="32" rx="8" fill="#24263f" stroke="#464b73"/>
-            <text x="164" y="21" fill="#c8cdfb" text-anchor="middle">JPA / SQL</text>
+            <text x="164" y="21" fill="#c8cdfb" text-anchor="middle">R2DBC / SQL</text>
             <rect x="220" width="105" height="32" rx="8" fill="#352c2e" stroke="#735246"/>
             <text x="272" y="21" fill="#ffd0b1" text-anchor="middle">JWT / Roles</text>
             <rect x="337" width="99" height="32" rx="8" fill="#1c3033" stroke="#365d60"/>
@@ -67,7 +67,7 @@
         </g>
         <g text-anchor="middle">
             <rect x="862" y="57" width="160" height="44" rx="10" fill="#20233b" stroke="#55517b"/>
-            <text x="942" y="84" font-size="13" font-weight="600" fill="#e8e5fb">HTTP / Spring MVC</text>
+            <text x="942" y="84" font-size="13" font-weight="600" fill="#e8e5fb">HTTP / WebFlux</text>
             <rect x="862" y="138" width="160" height="44" rx="10" fill="#30213f" stroke="#a26ad0"/>
             <circle cx="879" cy="160" r="3" fill="#c88ff4" class="pulse"/>
             <text x="947" y="165" font-size="13" font-weight="600" fill="#eedcff">Spring Boot</text>

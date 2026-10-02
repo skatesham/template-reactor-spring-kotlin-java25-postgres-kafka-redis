@@ -31,13 +31,13 @@ class ConfirmOrder(
 ) {
 
     @Transactional
-    fun execute(command: ConfirmOrderCommand) {
-        val order = repository.findById(command.orderId)
-            ?: throw OrderNotFound(command.orderId)
-
-        order.confirm()
-
-        repository.save(order)
+    fun execute(command: ConfirmOrderCommand): Mono<Void> = Mono.defer {
+        repository.findById(command.orderId)
+            .switchIfEmpty(Mono.error(OrderNotFound(command.orderId)))
+            .flatMap { order ->
+                order.confirm()
+                repository.save(order)
+            }
     }
 }
 ```
@@ -58,3 +58,8 @@ Query   → consulta estado
 CQRS distribuído não é requisito.
 
 Queries complexas podem utilizar projeções otimizadas sem reconstruir aggregates completos.
+
+Portas reativas de persistência ficam em `application/port/`. O domínio permanece
+síncrono e independente de Reactor; a aplicação compõe `Mono`/`Flux` e usa a
+transação R2DBC. O publisher retornado deve incluir todas as operações; não
+chamar `block()` ou `subscribe()` no caso de uso.

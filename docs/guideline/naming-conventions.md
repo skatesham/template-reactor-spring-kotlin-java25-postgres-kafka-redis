@@ -59,8 +59,8 @@ CustomerRepository
 Adapter:
 
 ```text
-JpaOrderRepository
-JpaCustomerRepository
+R2dbcOrderRepository
+R2dbcCustomerRepository
 ```
 
 Spring Data interno:
@@ -73,8 +73,8 @@ SpringDataCustomerRepository
 ## Persistence
 
 ```text
-OrderJpaEntity
-CustomerJpaEntity
+OrderRow
+CustomerRow
 ```
 
 ## REST

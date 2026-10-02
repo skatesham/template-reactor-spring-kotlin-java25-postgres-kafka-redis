@@ -8,7 +8,7 @@ import org.springframework.context.annotation.Import
 @SpringBootTest(
     properties = [
         "app.security.jwt.secret=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-        "spring.datasource.password=test",
+        "spring.r2dbc.password=test",
         "spring.docker.compose.enabled=false",
     ]
 )

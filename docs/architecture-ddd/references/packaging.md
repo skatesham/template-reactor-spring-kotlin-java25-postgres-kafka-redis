@@ -8,7 +8,6 @@ os padrões locais do template, sem criar pastas vazias ou novas abstrações.
 <context>/
 ├── domain/
 │   ├── model/
-│   ├── repository/
 │   ├── event/
 │   └── exception/
 ├── application/
@@ -25,8 +24,6 @@ os padrões locais do template, sem criar pastas vazias ou novas abstrações.
 │   └── exception/
 ├── infrastructure/
 │   ├── persistence/
-│   │   ├── entity/
-│   │   ├── repository/
 │   │   └── adapter/
 │   ├── cache/
 │   ├── messaging/
@@ -55,20 +52,20 @@ transacional; mover packages não muda consistência nem comportamento HTTP.
 
 ## Persistência
 
-- `entity/`: entidades JPA, como `CustomerJpaEntity`.
-- `repository/`: interfaces técnicas Spring Data, como `SpringDataCustomerRepository`.
-- `adapter/`: implementações das portas, como `JpaCustomerRepository` e `JdbcCustomerOutbox`.
+- `entity/`: criar somente quando um modelo de persistência próprio for necessário.
+- `repository/`: criar somente quando uma interface Spring Data for utilizada.
+- `adapter/`: implementações das portas, como `R2dbcCustomerRepository` e `R2dbcCustomerOutbox`.
 
-O repository port continua em `domain/repository/`. Portas de outbox, cache e
+Portas reativas de persistência ficam em `application/port/`, mantendo Reactor fora do domínio. Portas de outbox, cache e
 idempotência continuam em `application/port/`. Mappers pequenos podem ser
 funções privadas do adapter; um mapper independente fica junto ao adapter.
-Contextos com apenas JDBC precisam somente de `adapter/`.
+Este template usa SQL R2DBC e precisa somente de `adapter/` na persistência.
 
 ## REST e OpenAPI
 
 Controllers e handlers ficam em `interfaces/rest/`; entradas HTTP ficam em
 `request/` e saídas em `response/`, sem uma pasta intermediária `dto/`.
-Um request ou response não é uma entidade JPA, aggregate ou evento Kafka.
+Um request ou response não é uma row SQL, aggregate ou evento Kafka.
 
 Documentar controllers com tags, operações e respostas reais. Explicar
 status de sucesso e erro, autenticação, autorização, headers, parâmetros,

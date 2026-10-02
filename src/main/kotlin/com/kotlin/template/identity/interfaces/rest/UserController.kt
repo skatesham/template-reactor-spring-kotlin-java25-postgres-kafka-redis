@@ -15,6 +15,7 @@ import org.springframework.security.oauth2.jwt.Jwt
 import org.springframework.web.bind.annotation.GetMapping
 import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.RestController
+import reactor.core.publisher.Mono
 
 @RestController
 @RequestMapping("/api/users")
@@ -44,6 +45,6 @@ class UserController(private val currentUser: CurrentUser) {
             )]
         ),
     )
-    fun me(@AuthenticationPrincipal jwt: Jwt): UserResponse =
-        UserResponse.from(currentUser.execute(UUID.fromString(jwt.subject)))
+    fun me(@AuthenticationPrincipal jwt: Jwt): Mono<UserResponse> =
+        currentUser.execute(UUID.fromString(jwt.subject)).map(UserResponse::from)
 }

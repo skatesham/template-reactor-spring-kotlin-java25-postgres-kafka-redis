@@ -8,7 +8,7 @@ domain → interfaces
 domain → Spring
 
 application → Controller
-application → JpaEntity
+application → SQL Row
 application → KafkaTemplate
 
 controller → repository

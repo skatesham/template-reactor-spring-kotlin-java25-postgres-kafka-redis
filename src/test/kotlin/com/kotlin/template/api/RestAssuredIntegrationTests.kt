@@ -4,6 +4,7 @@ import com.kotlin.template.TestcontainersConfiguration
 import com.kotlin.template.audit.interfaces.scheduler.AuditRetentionJob
 import com.kotlin.template.customer.interfaces.scheduler.CustomerJobs
 import com.kotlin.template.notification.interfaces.scheduler.NotificationRetentionJob
+import com.kotlin.template.support.TestDatabase
 import io.micrometer.core.instrument.MeterRegistry
 import io.restassured.RestAssured.given
 import io.restassured.builder.RequestSpecBuilder
@@ -26,8 +27,7 @@ import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.boot.test.web.server.LocalServerPort
 import org.springframework.context.annotation.Import
-import org.springframework.data.redis.core.StringRedisTemplate
-import org.springframework.jdbc.core.JdbcTemplate
+import org.springframework.data.redis.core.ReactiveStringRedisTemplate
 import org.springframework.security.oauth2.jose.jws.MacAlgorithm
 import org.springframework.security.oauth2.jwt.JwsHeader
 import org.springframework.security.oauth2.jwt.JwtClaimsSet
@@ -38,14 +38,14 @@ import org.testcontainers.kafka.KafkaContainer
 import tools.jackson.databind.ObjectMapper
 
 /** Real sockets, real JWTs, real infrastructure; no mocked security or global RestAssured state. */
-@Import(TestcontainersConfiguration::class)
+@Import(com.kotlin.template.support.ReactiveTestConfiguration::class, TestcontainersConfiguration::class)
 @DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 @SpringBootTest(
     webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = [
         "app.security.jwt.secret=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
         "app.security.jwt.issuer=rest-assured-tests",
         "app.security.cors.allowed-origins=https://trusted.example",
-        "spring.datasource.password=test",
+        "spring.r2dbc.password=test",
         "spring.docker.compose.enabled=false",
         "app.customer.outbox.poll-ms=50",
     ]
@@ -56,9 +56,9 @@ class RestAssuredIntegrationTests {
     @Autowired
     lateinit var mapper: ObjectMapper
     @Autowired
-    lateinit var jdbc: JdbcTemplate
+    lateinit var db: TestDatabase
     @Autowired
-    lateinit var redis: StringRedisTemplate
+    lateinit var redis: ReactiveStringRedisTemplate
     @Autowired
     lateinit var encoder: JwtEncoder
     @Autowired
@@ -92,7 +92,7 @@ class RestAssuredIntegrationTests {
         assertFalse(claims.has("name")); assertFalse(claims.has("email"))
         assertNotEquals(
             account.password,
-            jdbc.queryForObject("SELECT password_hash FROM users WHERE id=?", String::class.java, account.id)
+            db.queryForObject("SELECT password_hash FROM users WHERE id=?", String::class.java, account.id)
         )
         request().body(json("email" to account.email.uppercase(), "password" to account.password))
             .post("/api/auth/login").then().statusCode(200)
@@ -180,8 +180,8 @@ class RestAssuredIntegrationTests {
     @Test
     fun `deleted identity yields a safe not found response`() {
         val account = account()
-        jdbc.update("DELETE FROM user_roles WHERE user_id=?", account.id)
-        jdbc.update("DELETE FROM users WHERE id=?", account.id)
+        db.update("DELETE FROM user_roles WHERE user_id=?", account.id)
+        db.update("DELETE FROM users WHERE id=?", account.id)
         problem(request(account.token).get("/api/users/me"), 404)
     }
 
@@ -194,7 +194,7 @@ class RestAssuredIntegrationTests {
         created.then().header("Location", equalTo("/api/customers/$id"))
             .body("revision", equalTo(1), "ownerId", nullValue())
         request(account.token).get("/api/customers/$id").then().statusCode(200)
-        assertNotNull(redis.opsForValue().get("customer:v1:$id:1"))
+        assertNotNull(redis.opsForValue().get("customer:v1:$id:1").block())
         request(account.token).get("/api/customers/$id").then().statusCode(200)
             .body("name", equalTo("Synthetic Customer"))
         request(account.token).body(
@@ -206,16 +206,16 @@ class RestAssuredIntegrationTests {
         )
             .put("/api/customers/$id").then().statusCode(200)
             .body("revision", equalTo(2), "name", equalTo("Updated Customer"))
-        assertNull(redis.opsForValue().get("customer:v1:$id:1"))
+        assertNull(redis.opsForValue().get("customer:v1:$id:1").block())
         request(account.token).get("/api/customers/$id").then().statusCode(200).body("revision", equalTo(2))
         request(account.token).queryParam("revision", 2).delete("/api/customers/$id").then().statusCode(204)
             .body(equalTo(""))
-        assertNull(redis.opsForValue().get("customer:v1:$id:2"))
+        assertNull(redis.opsForValue().get("customer:v1:$id:2").block())
         problem(request(account.token).get("/api/customers/$id"), 404)
         await { count("customer_audit", id) == 3 && count("customer_notifications", id) == 3 }
         assertEquals(
             listOf(1L, 2L, 3L),
-            jdbc.queryForList(
+            db.queryForList(
                 "SELECT revision FROM customer_audit WHERE customer_id=? ORDER BY recorded_at",
                 Long::class.java,
                 id
@@ -225,7 +225,7 @@ class RestAssuredIntegrationTests {
             .body("size()", equalTo(3), "[0].type", equalTo("customer.deleted.v1"))
         assertEquals(
             3,
-            jdbc.queryForObject(
+            db.queryForObject(
                 "SELECT count(*) FROM customer_outbox WHERE customer_id=? AND status='PUBLISHED'",
                 Int::class.java,
                 id
@@ -249,7 +249,7 @@ class RestAssuredIntegrationTests {
         request(other.token).get("/api/notifications").then().statusCode(200).body("size()", equalTo(0))
         create(other.token, email = email).then().statusCode(201) // uniqueness is owner scoped
         problem(
-            request(owner.token).header("Idempotency-Key", UUID.randomUUID())
+            request(owner.token).header("Idempotency-Key", UUID.randomUUID().toString())
                 .body(json("name" to "Duplicate", "email" to email.uppercase())).post("/api/customers"), 409
         )
         assertEquals(1, count("customer_outbox", UUID.fromString(id)))
@@ -271,16 +271,16 @@ class RestAssuredIntegrationTests {
             "missing-field" -> fields.remove("email")
         }
         problem(
-            request(account.token).header("Idempotency-Key", UUID.randomUUID()).body(mapper.writeValueAsString(fields))
+            request(account.token).header("Idempotency-Key", UUID.randomUUID().toString()).body(mapper.writeValueAsString(fields))
                 .post("/api/customers"), 400
         )
         assertEquals(
             0,
-            jdbc.queryForObject("SELECT count(*) FROM customers WHERE owner_id=?", Int::class.java, account.id)
+            db.queryForObject("SELECT count(*) FROM customers WHERE owner_id=?", Int::class.java, account.id)
         )
         assertEquals(
             0,
-            jdbc.queryForObject("SELECT count(*) FROM customer_outbox WHERE owner_id=?", Int::class.java, account.id)
+            db.queryForObject("SELECT count(*) FROM customer_outbox WHERE owner_id=?", Int::class.java, account.id)
         )
     }
 
@@ -436,10 +436,10 @@ class RestAssuredIntegrationTests {
     fun `malformed JSON media types and unsupported methods return appropriate HTTP errors`() {
         val account = account()
         problem(
-            request(account.token).header("Idempotency-Key", UUID.randomUUID()).body("{").post("/api/customers"),
+            request(account.token).header("Idempotency-Key", UUID.randomUUID().toString()).body("{").post("/api/customers"),
             400
         )
-        request(account.token).header("Idempotency-Key", UUID.randomUUID()).contentType(ContentType.TEXT)
+        request(account.token).header("Idempotency-Key", UUID.randomUUID().toString()).contentType(ContentType.TEXT)
             .body("not JSON").post("/api/customers").then().statusCode(415)
         request(account.token).patch("/api/customers/${UUID.randomUUID()}").then().statusCode(405)
     }
@@ -450,13 +450,13 @@ class RestAssuredIntegrationTests {
         val id = UUID.fromString(create(account.token).jsonPath().getString("id"))
         await { count("customer_audit", id) == 1 && count("customer_notifications", id) == 1 }
         val eventId =
-            jdbc.queryForObject("SELECT event_id FROM customer_outbox WHERE customer_id=?", UUID::class.java, id)!!
+            db.queryForObject("SELECT event_id FROM customer_outbox WHERE customer_id=?", UUID::class.java, id)!!
         for (action in listOf(
             "retry",
             "replay"
         )) problem(request(account.token).post("/api/admin/customer-delivery/$eventId/$action"), 403)
         problem(request(account.token).get("/actuator/metrics"), 403)
-        jdbc.update("INSERT INTO user_roles(user_id, role_name) VALUES (?, 'ADMIN')", account.id)
+        db.update("INSERT INTO user_roles(user_id, role_name) VALUES (?, 'ADMIN')", account.id)
         val admin = login(account.email, account.password)
         problem(request(account.token).get("/actuator/metrics"), 403) // issued token retains its original roles
         request(admin).get("/actuator/metrics").then().statusCode(200).body("names", hasItem("http.server.requests"))
@@ -473,10 +473,10 @@ class RestAssuredIntegrationTests {
         val before = duplicates()
         request(admin).post("/api/admin/customer-delivery/$eventId/replay").then().statusCode(202)
         await { duplicates() >= before + 2 }
-        jdbc.update("UPDATE customer_outbox SET status='FAILED' WHERE event_id=?", eventId)
+        db.update("UPDATE customer_outbox SET status='FAILED' WHERE event_id=?", eventId)
         request(admin).post("/api/admin/customer-delivery/$eventId/retry").then().statusCode(202)
         await {
-            jdbc.queryForObject(
+            db.queryForObject(
                 "SELECT status FROM customer_outbox WHERE event_id=?",
                 String::class.java,
                 eventId
@@ -491,8 +491,8 @@ class RestAssuredIntegrationTests {
         val id = UUID.fromString(create(account.token).jsonPath().getString("id"))
         await { count("customer_audit", id) == 1 && count("customer_notifications", id) == 1 }
         val eventId =
-            jdbc.queryForObject("SELECT event_id FROM customer_outbox WHERE customer_id=?", UUID::class.java, id)!!
-        jdbc.update("INSERT INTO user_roles(user_id, role_name) VALUES (?, 'ADMIN')", account.id)
+            db.queryForObject("SELECT event_id FROM customer_outbox WHERE customer_id=?", UUID::class.java, id)!!
+        db.update("INSERT INTO user_roles(user_id, role_name) VALUES (?, 'ADMIN')", account.id)
         val admin = login(account.email, account.password)
         kafka.dockerClient.pauseContainerCmd(kafka.containerId).exec()
         try {
@@ -506,7 +506,7 @@ class RestAssuredIntegrationTests {
         }
         assertEquals(
             "PUBLISHED",
-            jdbc.queryForObject("SELECT status FROM customer_outbox WHERE event_id=?", String::class.java, eventId)
+            db.queryForObject("SELECT status FROM customer_outbox WHERE event_id=?", String::class.java, eventId)
         )
     }
 
@@ -520,32 +520,32 @@ class RestAssuredIntegrationTests {
                     count("customer_notifications", inactive) == 1 && count("customer_notifications", active) == 1
         }
         request(account.token).get("/api/customers/$inactive").then().statusCode(200)
-        jdbc.update("UPDATE customers SET updated_at=CURRENT_TIMESTAMP-INTERVAL '366 days' WHERE id=?", inactive)
-        jdbc.update(
+        db.update("UPDATE customers SET updated_at=CURRENT_TIMESTAMP-INTERVAL '366 days' WHERE id=?", inactive)
+        db.update(
             "UPDATE customer_creation_requests SET created_at=CURRENT_TIMESTAMP-INTERVAL '2 days' WHERE owner_id=?",
             account.id
         )
-        jdbc.update(
+        db.update(
             "UPDATE customer_outbox SET published_at=CURRENT_TIMESTAMP-INTERVAL '31 days' WHERE customer_id IN (?,?) AND status='PUBLISHED'",
             inactive,
             active
         )
         for (table in listOf("customer_audit", "customer_notifications")) {
-            jdbc.update(
+            db.update(
                 "UPDATE $table SET recorded_at=CURRENT_TIMESTAMP-INTERVAL '31 days' WHERE customer_id IN (?,?)",
                 inactive,
                 active
             )
         }
-        jobs.retention()
-        auditRetention.retention()
-        notificationRetention.retention()
+        jobs.retention().block()
+        auditRetention.retention().block()
+        notificationRetention.retention().block()
         problem(request(account.token).get("/api/customers/$inactive"), 404)
         request(account.token).get("/api/customers/$active").then().statusCode(200)
-        assertNull(redis.opsForValue().get("customer:v1:$inactive:1"))
+        assertNull(redis.opsForValue().get("customer:v1:$inactive:1").block())
         assertEquals(
             0,
-            jdbc.queryForObject(
+            db.queryForObject(
                 "SELECT count(*) FROM customer_creation_requests WHERE owner_id=?",
                 Int::class.java,
                 account.id
@@ -661,8 +661,9 @@ class RestAssuredIntegrationTests {
         given().spec(base).apply { if (token != null) auth().oauth2(token) }
 
     private fun json(vararg fields: Pair<String, Any?>) = mapper.writeValueAsString(mapOf(*fields))
+
     private fun create(token: String, email: String = "customer-${UUID.randomUUID()}@example.com") = request(token)
-        .header("Idempotency-Key", UUID.randomUUID()).body(json("name" to "Synthetic Customer", "email" to email))
+        .header("Idempotency-Key", UUID.randomUUID().toString()).body(json("name" to "Synthetic Customer", "email" to email))
         .post("/api/customers").also { it.then().statusCode(201) }
 
     private fun problem(response: Response, status: Int) {
@@ -687,7 +688,7 @@ class RestAssuredIntegrationTests {
     ).tokenValue
 
     private fun count(table: String, id: UUID) =
-        jdbc.queryForObject("SELECT count(*) FROM $table WHERE customer_id=?", Int::class.java, id) ?: 0
+        db.queryForObject("SELECT count(*) FROM $table WHERE customer_id=?", Int::class.java, id) ?: 0
 
     private fun duplicates() = listOf("audit", "notification").sumOf {
         meters.find("customer.consumer.records").tags("consumer", it, "result", "duplicate").counter()?.count() ?: 0.0

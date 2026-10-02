@@ -3,7 +3,7 @@ package com.kotlin.template.customer
 import com.kotlin.template.audit.application.port.CustomerAudit
 import com.kotlin.template.audit.application.usecase.record.RecordCustomerAudit
 import com.kotlin.template.audit.application.usecase.retention.PurgeCustomerAudit
-import com.kotlin.template.audit.infrastructure.persistence.adapter.JdbcCustomerAudit
+import com.kotlin.template.audit.infrastructure.persistence.adapter.R2dbcCustomerAudit
 import com.kotlin.template.customer.application.contract.CustomerChange
 import com.kotlin.template.customer.application.usecase.create.CreateCustomer
 import com.kotlin.template.customer.application.usecase.create.CreateCustomerCommand
@@ -13,6 +13,7 @@ import com.kotlin.template.customer.application.usecase.update.UpdateCustomer
 import com.kotlin.template.customer.application.usecase.update.UpdateCustomerCommand
 import com.kotlin.template.notification.application.usecase.record.NotifyCustomerChange
 import com.kotlin.template.notification.application.usecase.retention.PurgeCustomerNotifications
+import com.kotlin.template.support.TestDatabase
 import io.micrometer.core.instrument.MeterRegistry
 import java.time.Duration
 import java.util.*
@@ -34,38 +35,36 @@ import org.springframework.boot.test.context.TestConfiguration
 import org.springframework.boot.test.system.CapturedOutput
 import org.springframework.boot.test.system.OutputCaptureExtension
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection
-import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc
+import org.springframework.boot.webtestclient.autoconfigure.AutoConfigureWebTestClient
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Import
 import org.springframework.context.annotation.Primary
-import org.springframework.data.redis.core.StringRedisTemplate
+import org.springframework.data.redis.core.ReactiveStringRedisTemplate
 import org.springframework.http.MediaType
-import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.security.core.authority.SimpleGrantedAuthority
-import org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt
+import org.springframework.security.test.web.reactive.server.SecurityMockServerConfigurers.mockJwt
 import org.springframework.test.annotation.DirtiesContext
-import org.springframework.test.web.servlet.MockMvc
-import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*
-import org.springframework.test.web.servlet.result.MockMvcResultMatchers.*
-import org.springframework.transaction.PlatformTransactionManager
-import org.springframework.transaction.support.TransactionTemplate
+import org.springframework.test.web.reactive.server.WebTestClient
+import org.springframework.transaction.ReactiveTransactionManager
+import org.springframework.transaction.reactive.TransactionalOperator
 import org.testcontainers.containers.GenericContainer
 import org.testcontainers.junit.jupiter.Container
 import org.testcontainers.junit.jupiter.Testcontainers
 import org.testcontainers.kafka.KafkaContainer
 import org.testcontainers.postgresql.PostgreSQLContainer
 import org.testcontainers.utility.DockerImageName
+import reactor.core.publisher.Mono
 import tools.jackson.databind.ObjectMapper
 
 @Testcontainers
 @ExtendWith(OutputCaptureExtension::class)
 @DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
-@AutoConfigureMockMvc
-@Import(CustomerFlowIntegrationTests.FailureConfiguration::class)
+@AutoConfigureWebTestClient
+@Import(com.kotlin.template.support.ReactiveTestConfiguration::class, CustomerFlowIntegrationTests.FailureConfiguration::class)
 @SpringBootTest(
     properties = [
         "app.security.jwt.secret=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-        "spring.datasource.password=test",
+        "spring.r2dbc.password=test",
         "spring.docker.compose.enabled=false",
         "app.customer.jobs.enabled=false",
         "app.customer.cache.ttl=PT2S",
@@ -75,13 +74,13 @@ import tools.jackson.databind.ObjectMapper
 )
 class CustomerFlowIntegrationTests {
     @Autowired
-    lateinit var mvc: MockMvc
+    lateinit var client: WebTestClient
     @Autowired
-    lateinit var jdbc: JdbcTemplate
+    lateinit var db: TestDatabase
     @Autowired
     lateinit var mapper: ObjectMapper
     @Autowired
-    lateinit var redisTemplate: StringRedisTemplate
+    lateinit var redisTemplate: ReactiveStringRedisTemplate
     @Autowired
     lateinit var publish: PublishCustomerOutbox
     @Autowired
@@ -89,7 +88,7 @@ class CustomerFlowIntegrationTests {
     @Autowired
     lateinit var update: UpdateCustomer
     @Autowired
-    lateinit var txManager: PlatformTransactionManager
+    lateinit var txManager: ReactiveTransactionManager
     @Autowired
     lateinit var audit: RecordCustomerAudit
     @Autowired
@@ -114,106 +113,92 @@ class CustomerFlowIntegrationTests {
     fun `authenticated REST to outbox Kafka independent audit and notification includes cache and hard deletion`() {
         val owner = UUID.randomUUID()
         val token = signupAndLogin(owner)
-        val response = mvc.perform(
-            post("/api/customers").header("Authorization", "Bearer $token")
-                .header("Idempotency-Key", UUID.randomUUID()).contentType(MediaType.APPLICATION_JSON)
-                .content("""{"name":"Synthetic Customer","email":"customer-$owner@example.com"}""")
-        )
-            .andExpect(status().isCreated).andExpect(header().exists("Location")).andReturn().response.contentAsString
+        val response = client.post().uri("/api/customers").header("Authorization", "Bearer $token")
+                .header("Idempotency-Key", UUID.randomUUID().toString()).contentType(MediaType.APPLICATION_JSON)
+                .bodyValue("""{"name":"Synthetic Customer","email":"customer-$owner@example.com"}""").exchange()
+            .expectStatus().isCreated.expectHeader().exists("Location").expectBody().returnResult().responseBody!!.toString(Charsets.UTF_8)
         val id = UUID.fromString(mapper.readTree(response)["id"].asString())
-        val realOwner = jdbc.queryForObject("SELECT owner_id FROM customers WHERE id=?", UUID::class.java, id)!!
+        val realOwner = db.queryForObject("SELECT owner_id FROM customers WHERE id=?", UUID::class.java, id)!!
         assertEquals(7, id.version())
         val first = event(id, 1)
         assertEquals(7, first.eventId.version())
         val payload = mapper.writeValueAsString(first)
         assertFalse(payload.contains("email")); assertFalse(payload.contains("name")); assertFalse(payload.contains("example.com"))
         assertEquals("PENDING", statusOf(first.eventId))
-        mvc.perform(get("/api/customers/$id").header("Authorization", "Bearer $token")).andExpect(status().isOk)
-        assertNotNull(redisTemplate.opsForValue().get(key(id, 1)))
-        mvc.perform(get("/api/customers/$id").header("Authorization", "Bearer $token")).andExpect(status().isOk)
+        client.get().uri("/api/customers/$id").header("Authorization", "Bearer $token").exchange().expectStatus().isOk
+        assertNotNull(redisTemplate.opsForValue().get(key(id, 1)).block())
+        client.get().uri("/api/customers/$id").header("Authorization", "Bearer $token").exchange().expectStatus().isOk
         assertTrue(meters.get("customer.cache.requests").tag("result", "hit").counter().count() >= 1)
-        assertTrue(redisTemplate.getExpire(key(id, 1)) in 0..2)
-        mvc.perform(
-            put("/api/customers/$id").header("Authorization", "Bearer $token")
+        assertTrue(redisTemplate.getExpire(key(id, 1)).block()!!.seconds in 0..2)
+        client.put().uri("/api/customers/$id").header("Authorization", "Bearer $token")
                 .contentType(MediaType.APPLICATION_JSON)
-                .content("""{"name":"Changed Customer","email":"changed-$owner@example.com","revision":1}""")
-        )
-            .andExpect(status().isOk).andExpect(jsonPath("$.revision").value(2))
-        assertNull(redisTemplate.opsForValue().get(key(id, 1)))
-        mvc.perform(get("/api/customers/$id").header("Authorization", "Bearer $token"))
-            .andExpect(status().isOk).andExpect(jsonPath("$.name").value("Changed Customer"))
-        assertNotNull(redisTemplate.opsForValue().get(key(id, 2)))
-        mvc.perform(delete("/api/customers/$id?revision=2").header("Authorization", "Bearer $token"))
-            .andExpect(status().isNoContent)
-        assertNull(redisTemplate.opsForValue().get(key(id, 2)))
+                .bodyValue("""{"name":"Changed Customer","email":"changed-$owner@example.com","revision":1}""").exchange()
+            .expectStatus().isOk.expectBody().jsonPath("$.revision").isEqualTo(2)
+        assertNull(redisTemplate.opsForValue().get(key(id, 1)).block())
+        client.get().uri("/api/customers/$id").header("Authorization", "Bearer $token").exchange()
+            .expectStatus().isOk.expectBody().jsonPath("$.name").isEqualTo("Changed Customer")
+        assertNotNull(redisTemplate.opsForValue().get(key(id, 2)).block())
+        client.delete().uri("/api/customers/$id?revision=2").header("Authorization", "Bearer $token").exchange()
+            .expectStatus().isNoContent
+        assertNull(redisTemplate.opsForValue().get(key(id, 2)).block())
         assertEquals(0, count("customers", id, "id"))
-        mvc.perform(get("/api/customers/$id").header("Authorization", "Bearer $token")).andExpect(status().isNotFound)
+        client.get().uri("/api/customers/$id").header("Authorization", "Bearer $token").exchange().expectStatus().isNotFound
         drain()
         await { count("customer_audit", id) == 3 && count("customer_notifications", id) == 3 }
         for (table in listOf("customer_audit", "customer_notifications")) {
             assertEquals(
                 listOf(1L, 2L, 3L),
-                jdbc.queryForList(
+                db.queryForList(
                     "SELECT revision FROM $table WHERE customer_id=? ORDER BY recorded_at",
                     Long::class.java,
                     id
                 )
             )
         }
-        mvc.perform(get("/api/notifications").with(user(realOwner))).andExpect(status().isOk)
-            .andExpect(jsonPath("$[0].type").value("customer.deleted.v1"))
-        audit.execute(first); notifications.execute(first)
+        client.mutateWith(user(realOwner)).get().uri("/api/notifications").exchange().expectStatus().isOk
+            .expectBody().jsonPath("$[0].type").isEqualTo("customer.deleted.v1")
+        audit.execute(first).block(); notifications.execute(first).block()
         assertEquals(3, count("customer_audit", id)); assertEquals(3, count("customer_notifications", id))
     }
 
     @Test
     fun `authorization validation pagination duplicate email and stale mutations do not leak or create events`(output: CapturedOutput) {
         val owner = UUID.randomUUID()
-        mvc.perform(get("/api/customers")).andExpect(status().isUnauthorized)
-        mvc.perform(
-            post("/api/customers").with(user(owner)).header("Idempotency-Key", UUID.randomUUID())
-                .contentType(MediaType.APPLICATION_JSON).content("""{"name":" ","email":"bad"}""")
-        )
-            .andExpect(status().isBadRequest)
+        client.get().uri("/api/customers").exchange().expectStatus().isUnauthorized
+        client.mutateWith(user(owner)).post().uri("/api/customers").header("Idempotency-Key", UUID.randomUUID().toString())
+                .contentType(MediaType.APPLICATION_JSON).bodyValue("""{"name":" ","email":"bad"}""").exchange()
+            .expectStatus().isBadRequest
         val id = createCustomer(owner)
-        for (request in listOf(
-            get("/api/customers/$id"),
-            put("/api/customers/$id").contentType(MediaType.APPLICATION_JSON)
-                .content("""{"name":"Changed","email":"changed@example.com","revision":1}"""),
-            delete("/api/customers/$id?revision=1")
-        )) {
-            mvc.perform(request.with(user(UUID.randomUUID()))).andExpect(status().isNotFound)
+        for (method in listOf(org.springframework.http.HttpMethod.GET, org.springframework.http.HttpMethod.PUT, org.springframework.http.HttpMethod.DELETE)) {
+            client.mutateWith(user(UUID.randomUUID())).method(method).uri("/api/customers/$id?revision=1")
+                .contentType(MediaType.APPLICATION_JSON)
+                .bodyValue("""{"name":"Changed","email":"changed@example.com","revision":1}""")
+                .exchange().expectStatus().isNotFound
         }
-        mvc.perform(get("/api/customers").with(user(owner))).andExpect(status().isOk)
-            .andExpect(jsonPath("$.length()").value(1))
-        mvc.perform(get("/api/customers?after=$id").with(user(owner))).andExpect(status().isOk)
-            .andExpect(jsonPath("$.length()").value(0))
-        mvc.perform(get("/api/customers?limit=101").with(user(owner))).andExpect(status().isBadRequest)
-        mvc.perform(get("/api/customers/invalid").with(user(owner))).andExpect(status().isBadRequest)
-        mvc.perform(
-            put("/api/customers/$id").with(user(owner)).contentType(MediaType.APPLICATION_JSON)
-                .content("""{"name":"Changed","email":"changed@example.com","revision":99}""")
-        )
-            .andExpect(status().isConflict)
-        mvc.perform(delete("/api/customers/$id?revision=99").with(user(owner))).andExpect(status().isConflict)
-        mvc.perform(
-            post("/api/customers").with(user(owner)).header("Idempotency-Key", UUID.randomUUID())
+        client.mutateWith(user(owner)).get().uri("/api/customers").exchange().expectStatus().isOk
+            .expectBody().jsonPath("$.length()").isEqualTo(1)
+        client.mutateWith(user(owner)).get().uri("/api/customers?after=$id").exchange().expectStatus().isOk
+            .expectBody().jsonPath("$.length()").isEqualTo(0)
+        client.mutateWith(user(owner)).get().uri("/api/customers?limit=101").exchange().expectStatus().isBadRequest
+        client.mutateWith(user(owner)).get().uri("/api/customers/invalid").exchange().expectStatus().isBadRequest
+        client.mutateWith(user(owner)).put().uri("/api/customers/$id").contentType(MediaType.APPLICATION_JSON)
+                .bodyValue("""{"name":"Changed","email":"changed@example.com","revision":99}""").exchange()
+            .expectStatus().isEqualTo(409)
+        client.mutateWith(user(owner)).delete().uri("/api/customers/$id?revision=99").exchange().expectStatus().isEqualTo(409)
+        client.mutateWith(user(owner)).post().uri("/api/customers").header("Idempotency-Key", UUID.randomUUID().toString())
                 .contentType(MediaType.APPLICATION_JSON)
-                .content("""{"name":"Duplicate","email":"CUSTOMER-$owner@EXAMPLE.COM"}""")
-        )
-            .andExpect(status().isConflict)
-        mvc.perform(
-            post("/api/customers").with(user(owner)).header("Idempotency-Key", UUID.randomUUID())
+                .bodyValue("""{"name":"Duplicate","email":"CUSTOMER-$owner@EXAMPLE.COM"}""").exchange()
+            .expectStatus().isEqualTo(409)
+        client.mutateWith(user(owner)).post().uri("/api/customers").header("Idempotency-Key", UUID.randomUUID().toString())
                 .contentType(MediaType.APPLICATION_JSON)
-                .content("""{"name":"Unexpected","email":"another@example.com","ownerId":"$owner"}""")
-        )
-            .andExpect(status().isBadRequest)
+                .bodyValue("""{"name":"Unexpected","email":"another@example.com","ownerId":"$owner"}""").exchange()
+            .expectStatus().isBadRequest
         assertFalse(output.toString().contains("customer-$owner@example.com"))
         assertFalse(output.toString().contains("CUSTOMER-$owner@EXAMPLE.COM"))
         assertEquals(1, count("customer_outbox", id))
-        assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM customers WHERE owner_id=?", Int::class.java, owner))
-        mvc.perform(post("/api/admin/customer-delivery/${event(id, 1).eventId}/replay").with(user(owner)))
-            .andExpect(status().isForbidden)
+        assertEquals(1, db.queryForObject("SELECT count(*) FROM customers WHERE owner_id=?", Int::class.java, owner))
+        client.mutateWith(user(owner)).post().uri("/api/admin/customer-delivery/${event(id, 1).eventId}/replay").exchange()
+            .expectStatus().isForbidden
         drain()
     }
 
@@ -226,32 +211,26 @@ class CustomerFlowIntegrationTests {
             val results = (1..2).map {
                 executor.submit(Callable {
                     start.await()
-                    mvc.perform(
-                        post("/api/customers").with(user(owner)).header("Idempotency-Key", requestKey)
+                    client.mutateWith(user(owner)).post().uri("/api/customers").header("Idempotency-Key", requestKey.toString())
                             .contentType(MediaType.APPLICATION_JSON)
-                            .content("""{"name":"Synthetic","email":"same-$owner@example.com"}""")
-                    )
-                        .andExpect(status().isCreated).andReturn().response.contentAsString
+                            .bodyValue("""{"name":"Synthetic","email":"same-$owner@example.com"}""").exchange()
+                        .expectStatus().isCreated.expectBody().returnResult().responseBody!!.toString(Charsets.UTF_8)
                 })
             }
             start.countDown()
             assertEquals(results[0].get(), results[1].get())
         }
-        val id = jdbc.queryForObject("SELECT id FROM customers WHERE owner_id=?", UUID::class.java, owner)!!
+        val id = db.queryForObject("SELECT id FROM customers WHERE owner_id=?", UUID::class.java, owner)!!
         assertEquals(1, count("customer_outbox", id))
-        mvc.perform(
-            post("/api/customers").with(user(owner)).header("Idempotency-Key", requestKey)
+        client.mutateWith(user(owner)).post().uri("/api/customers").header("Idempotency-Key", requestKey.toString())
                 .contentType(MediaType.APPLICATION_JSON)
-                .content("""{"name":"Different","email":"same-$owner@example.com"}""")
-        )
-            .andExpect(status().isConflict)
-        mvc.perform(delete("/api/customers/$id?revision=1").with(user(owner))).andExpect(status().isNoContent)
-        mvc.perform(
-            post("/api/customers").with(user(owner)).header("Idempotency-Key", requestKey)
+                .bodyValue("""{"name":"Different","email":"same-$owner@example.com"}""").exchange()
+            .expectStatus().isEqualTo(409)
+        client.mutateWith(user(owner)).delete().uri("/api/customers/$id?revision=1").exchange().expectStatus().isNoContent
+        client.mutateWith(user(owner)).post().uri("/api/customers").header("Idempotency-Key", requestKey.toString())
                 .contentType(MediaType.APPLICATION_JSON)
-                .content("""{"name":"Synthetic","email":"same-$owner@example.com"}""")
-        )
-            .andExpect(status().isConflict)
+                .bodyValue("""{"name":"Synthetic","email":"same-$owner@example.com"}""").exchange()
+            .expectStatus().isEqualTo(409)
         drain()
     }
 
@@ -264,11 +243,9 @@ class CustomerFlowIntegrationTests {
             val results = (1..2).map { n ->
                 executor.submit(Callable {
                     start.await()
-                    mvc.perform(
-                        put("/api/customers/$id").with(user(owner)).contentType(MediaType.APPLICATION_JSON)
-                            .content("""{"name":"Changed $n","email":"changed-$n@example.com","revision":1}""")
-                    )
-                        .andReturn().response.status
+                    client.mutateWith(user(owner)).put().uri("/api/customers/$id").contentType(MediaType.APPLICATION_JSON)
+                            .bodyValue("""{"name":"Changed $n","email":"changed-$n@example.com","revision":1}""").exchange()
+                        .expectBody().returnResult().status.value()
                 })
             }
             start.countDown(); assertEquals(listOf(200, 409), results.map { it.get() }.sorted())
@@ -281,33 +258,33 @@ class CustomerFlowIntegrationTests {
     fun `rollback removes customer outbox and request reservation and does not evict committed cache`() {
         val owner = UUID.randomUUID()
         assertFailsWith<IllegalStateException> {
-            TransactionTemplate(txManager).executeWithoutResult {
+            TransactionalOperator.create(txManager).transactional(
                 create.execute(CreateCustomerCommand(owner, "Rolled back", "rollback@example.com", UUID.randomUUID()))
-                error("Rollback transaction")
-            }
+                    .then(Mono.error<Void>(IllegalStateException("Rollback transaction")))
+            ).block()
         }
-        assertEquals(0, jdbc.queryForObject("SELECT count(*) FROM customers WHERE owner_id=?", Int::class.java, owner))
+        assertEquals(0, db.queryForObject("SELECT count(*) FROM customers WHERE owner_id=?", Int::class.java, owner))
         assertEquals(
             0,
-            jdbc.queryForObject("SELECT count(*) FROM customer_outbox WHERE owner_id=?", Int::class.java, owner)
+            db.queryForObject("SELECT count(*) FROM customer_outbox WHERE owner_id=?", Int::class.java, owner)
         )
         assertEquals(
             0,
-            jdbc.queryForObject(
+            db.queryForObject(
                 "SELECT count(*) FROM customer_creation_requests WHERE owner_id=?",
                 Int::class.java,
                 owner
             )
         )
         val id = createCustomer(owner)
-        mvc.perform(get("/api/customers/$id").with(user(owner))).andExpect(status().isOk)
+        client.mutateWith(user(owner)).get().uri("/api/customers/$id").exchange().expectStatus().isOk
         assertFailsWith<IllegalStateException> {
-            TransactionTemplate(txManager).executeWithoutResult {
+            TransactionalOperator.create(txManager).transactional(
                 update.execute(UpdateCustomerCommand(id, owner, "Rollback update", "rollback-update@example.com", 1))
-                error("Rollback transaction")
-            }
+                    .then(Mono.error<Void>(IllegalStateException("Rollback transaction")))
+            ).block()
         }
-        assertNotNull(redisTemplate.opsForValue().get(key(id, 1)))
+        assertNotNull(redisTemplate.opsForValue().get(key(id, 1)).block())
         assertEquals(1, count("customer_outbox", id)); drain()
     }
 
@@ -315,23 +292,21 @@ class CustomerFlowIntegrationTests {
     fun `cache TTL corrupt entry fallback and Redis outage preserve reads and confirmed writes`() {
         val owner = UUID.randomUUID();
         val id = createCustomer(owner)
-        mvc.perform(get("/api/customers/$id").with(user(owner))).andExpect(status().isOk)
-        await { redisTemplate.opsForValue().get(key(id, 1)) == null }
-        redisTemplate.opsForValue().set(key(id, 1), "corrupted", Duration.ofSeconds(2))
-        mvc.perform(get("/api/customers/$id").with(user(owner))).andExpect(status().isOk)
+        client.mutateWith(user(owner)).get().uri("/api/customers/$id").exchange().expectStatus().isOk
+        await { redisTemplate.opsForValue().get(key(id, 1)).block() == null }
+        redisTemplate.opsForValue().set(key(id, 1), "corrupted", Duration.ofSeconds(2)).block()
+        client.mutateWith(user(owner)).get().uri("/api/customers/$id").exchange().expectStatus().isOk
         redis.dockerClient.pauseContainerCmd(redis.containerId).exec()
         try {
-            mvc.perform(get("/api/customers/$id").with(user(owner))).andExpect(status().isOk)
-            mvc.perform(
-                put("/api/customers/$id").with(user(owner)).contentType(MediaType.APPLICATION_JSON)
-                    .content("""{"name":"Redis offline","email":"redis-offline@example.com","revision":1}""")
-            )
-                .andExpect(status().isOk)
+            client.mutateWith(user(owner)).get().uri("/api/customers/$id").exchange().expectStatus().isOk
+            client.mutateWith(user(owner)).put().uri("/api/customers/$id").contentType(MediaType.APPLICATION_JSON)
+                    .bodyValue("""{"name":"Redis offline","email":"redis-offline@example.com","revision":1}""").exchange()
+                .expectStatus().isOk
         } finally {
             redis.dockerClient.unpauseContainerCmd(redis.containerId).exec()
         }
-        mvc.perform(get("/api/customers/$id").with(user(owner)))
-            .andExpect(status().isOk).andExpect(jsonPath("$.revision").value(2))
+        client.mutateWith(user(owner)).get().uri("/api/customers/$id").exchange()
+            .expectStatus().isOk.expectBody().jsonPath("$.revision").isEqualTo(2)
         assertTrue(meters.get("customer.cache.failures").tag("operation", "get").counter().count() > 0)
         drain()
     }
@@ -341,22 +316,22 @@ class CustomerFlowIntegrationTests {
         drain()
         val owner = UUID.randomUUID();
         val id = createCustomer(owner)
-        update.execute(UpdateCustomerCommand(id, owner, "Changed", "kafka-outage@example.com", 1))
+        update.execute(UpdateCustomerCommand(id, owner, "Changed", "kafka-outage@example.com", 1)).block()!!
         val first = event(id, 1);
         val second = event(id, 2)
         kafka.dockerClient.pauseContainerCmd(kafka.containerId).exec()
         try {
-            assertTrue(publish.execute())
+            assertTrue(publish.execute().block()!!)
             assertEquals("PENDING", statusOf(first.eventId)); assertEquals("PENDING", statusOf(second.eventId))
-            assertFalse(publish.execute()) // not due; later revision must remain blocked
-            jdbc.update("UPDATE customer_outbox SET next_attempt_at=CURRENT_TIMESTAMP WHERE event_id=?", first.eventId)
-            assertTrue(publish.execute()); assertEquals("FAILED", statusOf(first.eventId))
-            assertFalse(publish.execute())
+            assertFalse(publish.execute().block()!!) // not due; later revision must remain blocked
+            db.update("UPDATE customer_outbox SET next_attempt_at=CURRENT_TIMESTAMP WHERE event_id=?", first.eventId)
+            assertTrue(publish.execute().block()!!); assertEquals("FAILED", statusOf(first.eventId))
+            assertFalse(publish.execute().block()!!)
         } finally {
             kafka.dockerClient.unpauseContainerCmd(kafka.containerId).exec()
         }
-        mvc.perform(post("/api/admin/customer-delivery/${first.eventId}/retry").with(admin()))
-            .andExpect(status().isAccepted)
+        client.mutateWith(admin()).post().uri("/api/admin/customer-delivery/${first.eventId}/retry").exchange()
+            .expectStatus().isAccepted
         drain()
         await { count("customer_audit", id) == 2 && count("customer_notifications", id) == 2 }
         assertEquals("PUBLISHED", statusOf(first.eventId)); assertEquals("PUBLISHED", statusOf(second.eventId))
@@ -369,7 +344,7 @@ class CustomerFlowIntegrationTests {
         val id = createCustomer(owner)
         val first = event(id, 1)
         failingAudit.failures[first.eventId] = AtomicInteger(100)
-        update.execute(UpdateCustomerCommand(id, owner, "Changed", "dlt@example.com", 1))
+        update.execute(UpdateCustomerCommand(id, owner, "Changed", "dlt@example.com", 1)).block()!!
         val second = event(id, 2)
         drain()
         await { count("customer_notifications", id) == 2 }
@@ -386,11 +361,11 @@ class CustomerFlowIntegrationTests {
         }
         assertTrue(failingAudit.failures[first.eventId]!!.get() <= 96) // initial attempt + 3 retries
         failingAudit.failures.clear()
-        mvc.perform(post("/api/admin/customer-delivery/${first.eventId}/replay").with(admin()))
-            .andExpect(status().isAccepted)
+        client.mutateWith(admin()).post().uri("/api/admin/customer-delivery/${first.eventId}/replay").exchange()
+            .expectStatus().isAccepted
         await { count("customer_audit", id) == 1 }
-        mvc.perform(post("/api/admin/customer-delivery/${second.eventId}/replay").with(admin()))
-            .andExpect(status().isAccepted)
+        client.mutateWith(admin()).post().uri("/api/admin/customer-delivery/${second.eventId}/replay").exchange()
+            .expectStatus().isAccepted
         await { count("customer_audit", id) == 2 }
         assertEquals(2, count("customer_notifications", id))
     }
@@ -438,32 +413,32 @@ class CustomerFlowIntegrationTests {
         val first = event(id, 1)
         drain(); await { count("customer_audit", id) == 1 && count("customer_notifications", id) == 1 }
         for (table in listOf("customer_audit", "customer_notifications")) {
-            jdbc.update("UPDATE $table SET recorded_at=CURRENT_TIMESTAMP-INTERVAL '32 days' WHERE customer_id=?", id)
-            jdbc.update(
+            db.update("UPDATE $table SET recorded_at=CURRENT_TIMESTAMP-INTERVAL '32 days' WHERE customer_id=?", id)
+            db.update(
                 "UPDATE ${table}_cursor SET updated_at=CURRENT_TIMESTAMP-INTERVAL '40 days' WHERE customer_id=?",
                 id
             )
         }
-        purgeAudit.execute(); purgeNotifications.execute()
+        purgeAudit.execute().block(); purgeNotifications.execute().block()
         assertEquals(0, count("customer_audit", id)); assertEquals(0, count("customer_notifications", id))
         assertEquals(1, count("customer_audit_cursor", id)); assertEquals(1, count("customer_notifications_cursor", id))
-        audit.execute(first); notifications.execute(first)
+        audit.execute(first).block(); notifications.execute(first).block()
         assertEquals(0, count("customer_audit", id)); assertEquals(0, count("customer_notifications", id))
-        update.execute(UpdateCustomerCommand(id, owner, "Active again", "active-again@example.com", 1))
+        update.execute(UpdateCustomerCommand(id, owner, "Active again", "active-again@example.com", 1)).block()!!
         drain(); await { count("customer_audit", id) == 1 && count("customer_notifications", id) == 1 }
-        mvc.perform(delete("/api/customers/$id?revision=2").with(user(owner))).andExpect(status().isNoContent)
+        client.mutateWith(user(owner)).delete().uri("/api/customers/$id?revision=2").exchange().expectStatus().isNoContent
         drain(); await { count("customer_audit", id) == 2 && count("customer_notifications", id) == 2 }
         for (table in listOf("customer_audit_cursor", "customer_notifications_cursor")) {
-            jdbc.update("UPDATE $table SET deleted_at=CURRENT_TIMESTAMP-INTERVAL '32 days' WHERE customer_id=?", id)
+            db.update("UPDATE $table SET deleted_at=CURRENT_TIMESTAMP-INTERVAL '32 days' WHERE customer_id=?", id)
         }
-        purgeAudit.execute(); purgeNotifications.execute()
+        purgeAudit.execute().block(); purgeNotifications.execute().block()
         assertEquals(0, count("customer_audit_cursor", id)); assertEquals(0, count("customer_notifications_cursor", id))
         assertFailsWith<IllegalArgumentException> {
             audit.execute(
                 first.copy(
                     occurredAt = java.time.Instant.now().minusSeconds(31 * 86400L)
                 )
-            )
+            ).block()
         }
     }
 
@@ -473,13 +448,13 @@ class CustomerFlowIntegrationTests {
         val id = createCustomer(owner)
         val first = event(id, 1)
         assertFailsWith<IllegalStateException> {
-            TransactionTemplate(txManager).executeWithoutResult {
+            TransactionalOperator.create(txManager).transactional(
                 audit.execute(first)
-                error("Synthetic rollback after effect")
-            }
+                    .then(Mono.error<Void>(IllegalStateException("Synthetic rollback after effect")))
+            ).block()
         }
         assertEquals(0, count("customer_audit", id)); assertEquals(0, count("customer_audit_cursor", id))
-        audit.execute(first)
+        audit.execute(first).block()
         assertEquals(1, count("customer_audit", id)); assertEquals(1, count("customer_audit_cursor", id))
         drain(); await { count("customer_notifications", id) == 1 }
         assertEquals(1, count("customer_audit", id))
@@ -489,8 +464,8 @@ class CustomerFlowIntegrationTests {
     fun `retention removes inactive profile through normal deletion flow`() {
         val owner = UUID.randomUUID();
         val id = createCustomer(owner)
-        jdbc.update("UPDATE customers SET updated_at=CURRENT_TIMESTAMP-INTERVAL '366 days' WHERE id=?", id)
-        expired.execute()
+        db.update("UPDATE customers SET updated_at=CURRENT_TIMESTAMP-INTERVAL '366 days' WHERE id=?", id)
+        expired.execute().block()
         assertEquals(0, count("customers", id, "id")); assertEquals(2, count("customer_outbox", id))
         assertEquals("customer.deleted.v1", event(id, 2).type)
         drain(); await { count("customer_audit", id) == 2 }
@@ -501,38 +476,35 @@ class CustomerFlowIntegrationTests {
             owner,
             "Synthetic Customer", "customer-$owner@example.com", UUID.randomUUID()
         )
-    ).id
+    ).block()!!.id
 
     private fun signupAndLogin(marker: UUID): String {
         val email = "account-$marker@example.com"
-        mvc.perform(
-            post("/api/auth/signup").contentType(MediaType.APPLICATION_JSON)
-                .content("""{"name":"Synthetic Owner","email":"$email","password":"valid-password"}""")
-        )
-            .andExpect(status().isCreated)
-        val result = mvc.perform(
-            post("/api/auth/login").contentType(MediaType.APPLICATION_JSON)
-                .content("""{"email":"$email","password":"valid-password"}""")
-        )
-            .andExpect(status().isOk).andReturn().response.contentAsString
+        client.post().uri("/api/auth/signup").contentType(MediaType.APPLICATION_JSON)
+                .bodyValue("""{"name":"Synthetic Owner","email":"$email","password":"valid-password"}""").exchange()
+            .expectStatus().isCreated
+        val result = client.post().uri("/api/auth/login").contentType(MediaType.APPLICATION_JSON)
+                .bodyValue("""{"email":"$email","password":"valid-password"}""").exchange()
+            .expectStatus().isOk.expectBody().returnResult().responseBody!!.toString(Charsets.UTF_8)
         return mapper.readTree(result)["accessToken"].asString()
     }
 
     private fun user(owner: UUID) =
-        jwt().jwt { it.subject(owner.toString()) }.authorities(SimpleGrantedAuthority("ROLE_USER"))
+        mockJwt().jwt { it.subject(owner.toString()) }.authorities(SimpleGrantedAuthority("ROLE_USER"))
 
     private fun admin() =
-        jwt().jwt { it.subject(UUID.randomUUID().toString()) }.authorities(SimpleGrantedAuthority("ROLE_ADMIN"))
+        mockJwt().jwt { it.subject(UUID.randomUUID().toString()) }.authorities(SimpleGrantedAuthority("ROLE_ADMIN"))
 
     private fun key(id: UUID, revision: Long) = "customer:v1:$id:$revision"
+
     private fun count(table: String, id: UUID, column: String = "customer_id") =
-        jdbc.queryForObject("SELECT count(*) FROM $table WHERE $column=?", Int::class.java, id) ?: 0
+        db.queryForObject("SELECT count(*) FROM $table WHERE $column=?", Int::class.java, id) ?: 0
 
     private fun statusOf(eventId: UUID) =
-        jdbc.queryForObject("SELECT status FROM customer_outbox WHERE event_id=?", String::class.java, eventId)
+        db.queryForObject("SELECT status FROM customer_outbox WHERE event_id=?", String::class.java, eventId)
 
     private fun event(id: UUID, revision: Long) =
-        jdbc.query("SELECT * FROM customer_outbox WHERE customer_id=? AND revision=?", { rs, _ ->
+        db.query("SELECT * FROM customer_outbox WHERE customer_id=? AND revision=?", { rs, _ ->
             CustomerChange(
                 rs.getObject("event_id", UUID::class.java),
                 rs.getObject("customer_id", UUID::class.java),
@@ -544,7 +516,7 @@ class CustomerFlowIntegrationTests {
         }, id, revision).single()
 
     private fun drain() {
-        repeat(200) { if (!publish.execute()) return }; error("Outbox did not drain")
+        repeat(200) { if (!publish.execute().block()!!) return }; error("Outbox did not drain")
     }
 
     private fun await(check: () -> Boolean) {
@@ -579,14 +551,14 @@ class CustomerFlowIntegrationTests {
     class FailureConfiguration {
         @Bean
         @Primary
-        fun failingAudit(delegate: JdbcCustomerAudit) = FailingAudit(delegate)
+        fun failingAudit(delegate: R2dbcCustomerAudit) = FailingAudit(delegate)
     }
 
-    class FailingAudit(private val delegate: JdbcCustomerAudit) : CustomerAudit {
+    class FailingAudit(private val delegate: R2dbcCustomerAudit) : CustomerAudit {
         val failures = ConcurrentHashMap<UUID, AtomicInteger>()
-        override fun record(change: CustomerChange): Boolean {
+        override fun record(change: CustomerChange): Mono<Boolean> = Mono.defer {
             if ((failures[change.eventId]?.getAndDecrement() ?: 0) > 0) error("Synthetic audit failure")
-            return delegate.record(change)
+            delegate.record(change)
         }
 
         override fun purge() = delegate.purge()

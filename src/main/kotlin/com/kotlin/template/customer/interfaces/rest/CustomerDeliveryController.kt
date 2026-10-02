@@ -16,6 +16,7 @@ import org.springframework.web.bind.annotation.PathVariable
 import org.springframework.web.bind.annotation.PostMapping
 import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.RestController
+import reactor.core.publisher.Mono
 
 @RestController
 @RequestMapping("/api/admin/customer-delivery")
@@ -53,9 +54,8 @@ class CustomerDeliveryController(private val recover: RecoverCustomerDelivery) {
             content = [Content(mediaType = "application/problem+json", schema = Schema(implementation = ProblemDetail::class))]
         ),
     )
-    fun retry(@Parameter(description = "UUIDv7 do evento da outbox; não é o ID do customer.", required = true) @PathVariable eventId: UUID): ResponseEntity<Void> {
-        recover.retry(eventId)
-        return ResponseEntity.accepted().build()
+    fun retry(@Parameter(description = "UUIDv7 do evento da outbox; não é o ID do customer.", required = true) @PathVariable eventId: UUID): Mono<ResponseEntity<Void>> {
+        return recover.retry(eventId).thenReturn(ResponseEntity.accepted().build())
     }
 
     @PostMapping("/{eventId}/replay")
@@ -89,8 +89,7 @@ class CustomerDeliveryController(private val recover: RecoverCustomerDelivery) {
             content = [Content(mediaType = "application/problem+json", schema = Schema(implementation = ProblemDetail::class))]
         ),
     )
-    fun replay(@Parameter(description = "UUIDv7 do evento da outbox; não é o ID do customer.", required = true) @PathVariable eventId: UUID): ResponseEntity<Void> {
-        recover.replay(eventId)
-        return ResponseEntity.accepted().build()
+    fun replay(@Parameter(description = "UUIDv7 do evento da outbox; não é o ID do customer.", required = true) @PathVariable eventId: UUID): Mono<ResponseEntity<Void>> {
+        return recover.replay(eventId).thenReturn(ResponseEntity.accepted().build())
     }
 }

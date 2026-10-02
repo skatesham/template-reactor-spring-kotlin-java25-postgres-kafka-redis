@@ -2,12 +2,12 @@ package com.kotlin.template.customer
 
 import com.fasterxml.uuid.Generators
 import com.kotlin.template.customer.application.port.CustomerIds
+import com.kotlin.template.customer.application.port.CustomerRepository
 import com.kotlin.template.customer.application.usecase.delete.DeleteCustomer
 import com.kotlin.template.customer.application.usecase.retention.DeleteExpiredCustomers
 import com.kotlin.template.customer.domain.model.Customer
 import com.kotlin.template.customer.domain.model.CustomerEmail
 import com.kotlin.template.customer.domain.model.CustomerId
-import com.kotlin.template.customer.domain.repository.CustomerRepository
 import java.time.Clock
 import java.time.Instant
 import java.time.ZoneOffset
@@ -16,6 +16,8 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import org.junit.jupiter.params.ParameterizedTest
 import org.junit.jupiter.params.provider.ValueSource
+import reactor.core.publisher.Flux
+import reactor.core.publisher.Mono
 
 class CustomerRetentionConcurrencyTests {
     @ParameterizedTest
@@ -32,21 +34,19 @@ class CustomerRetentionConcurrencyTests {
         var locks = 0;
         var deletions = 0
         val repository = object : CustomerRepository by memory {
-            override fun expired(before: Instant, limit: Int) = listOf(id to owner)
-            override fun find(id: CustomerId, ownerId: UUID): Customer? = when (scenario) {
+            override fun expired(before: Instant, limit: Int) = Flux.just(id to owner)
+            override fun find(id: CustomerId, ownerId: UUID): Mono<Customer> = Mono.justOrEmpty(when (scenario) {
                 "removed-before-load" -> null
                 "updated-before-load" -> fresh
                 else -> old
-            }
+            })
 
-            override fun findForUpdate(id: CustomerId, ownerId: UUID): Customer? {
+            override fun findForUpdate(id: CustomerId, ownerId: UUID): Mono<Customer> = Mono.defer {
                 locks++
-                return if (scenario == "removed-before-lock") null else fresh
+                Mono.justOrEmpty(if (scenario == "removed-before-lock") null else fresh)
             }
 
-            override fun delete(customer: Customer) {
-                deletions++
-            }
+            override fun delete(customer: Customer): Mono<Void> = Mono.fromRunnable { deletions++ }
         }
         val outbox = CustomerApplicationTests.MemoryOutbox()
         val clock = Clock.fixed(now, ZoneOffset.UTC)
@@ -57,7 +57,7 @@ class CustomerRetentionConcurrencyTests {
             CustomerIds { generator.generate() },
             clock
         )
-        DeleteExpiredCustomers(repository, delete, clock).execute()
+        DeleteExpiredCustomers(repository, delete, clock).execute().block()
         assertEquals(0, deletions)
         assertTrue(outbox.values.isEmpty())
         assertEquals(if (scenario.endsWith("lock")) 1 else 0, locks)

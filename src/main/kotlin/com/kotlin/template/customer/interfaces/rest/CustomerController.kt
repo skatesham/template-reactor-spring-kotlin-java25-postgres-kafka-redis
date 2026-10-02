@@ -31,6 +31,7 @@ import org.springframework.http.ResponseEntity
 import org.springframework.security.core.annotation.AuthenticationPrincipal
 import org.springframework.security.oauth2.jwt.Jwt
 import org.springframework.web.bind.annotation.*
+import reactor.core.publisher.Mono
 
 @RestController
 @RequestMapping("/api/customers")
@@ -71,10 +72,10 @@ class CustomerController(
         @Parameter(description = "UUID escolhido pelo cliente para identificar esta criação. Reutilize-o somente ao repetir a mesma operação.", required = true, schema = Schema(type = "string", format = "uuid"))
         @RequestHeader("Idempotency-Key") requestKey: UUID,
         @Valid @RequestBody request: CreateCustomerRequest
-    ): ResponseEntity<CustomerResponse> {
+    ): Mono<ResponseEntity<CustomerResponse>> {
         val result =
             create.execute(CreateCustomerCommand(UUID.fromString(jwt.subject), request.name, request.email, requestKey))
-        return ResponseEntity.created(URI.create("/api/customers/${result.id}")).body(CustomerResponse.from(result))
+        return result.map { ResponseEntity.created(URI.create("/api/customers/${it.id}")).body(CustomerResponse.from(it)) }
     }
 
     @GetMapping
@@ -106,7 +107,7 @@ class CustomerController(
         @Parameter(description = "Quantidade máxima de itens por página, de 1 a 100.", schema = Schema(defaultValue = "20", minimum = "1", maximum = "100"))
         @RequestParam(defaultValue = "20") @Min(1) @Max(100) limit: Int
     ) =
-        list.execute(ListCustomersQuery(UUID.fromString(jwt.subject), after, limit)).map(CustomerResponse::from)
+        list.execute(ListCustomersQuery(UUID.fromString(jwt.subject), after, limit)).map(CustomerResponse::from).collectList()
 
     @GetMapping("/{id}")
     @Operation(
@@ -140,7 +141,7 @@ class CustomerController(
         @Parameter(description = "UUID do customer pertencente ao usuário autenticado.", required = true)
         @PathVariable id: UUID
     ) =
-        CustomerResponse.from(find.execute(FindCustomerQuery(id, UUID.fromString(jwt.subject))))
+        find.execute(FindCustomerQuery(id, UUID.fromString(jwt.subject))).map(CustomerResponse::from)
 
     @PutMapping("/{id}")
     @Operation(
@@ -178,8 +179,7 @@ class CustomerController(
         @Parameter(description = "UUID do customer pertencente ao usuário autenticado.", required = true) @PathVariable id: UUID,
         @Valid @RequestBody request: UpdateCustomerRequest
     ) =
-        CustomerResponse.from(
-            update.execute(
+        update.execute(
                 UpdateCustomerCommand(
                     id,
                     UUID.fromString(jwt.subject),
@@ -187,8 +187,7 @@ class CustomerController(
                     request.email,
                     request.revision
                 )
-            )
-        )
+            ).map(CustomerResponse::from)
 
     @DeleteMapping("/{id}")
     @Operation(
@@ -226,8 +225,8 @@ class CustomerController(
         @Parameter(description = "UUID do customer pertencente ao usuário autenticado.", required = true) @PathVariable id: UUID,
         @Parameter(description = "Revisão atual do customer obtida na consulta.", required = true, schema = Schema(minimum = "1"))
         @RequestParam @Positive revision: Long
-    ): ResponseEntity<Void> {
-        delete.execute(DeleteCustomerCommand(id, UUID.fromString(jwt.subject), revision))
-        return ResponseEntity.noContent().build()
+     ): Mono<ResponseEntity<Void>> {
+        return delete.execute(DeleteCustomerCommand(id, UUID.fromString(jwt.subject), revision))
+            .thenReturn(ResponseEntity.noContent().build())
     }
 }

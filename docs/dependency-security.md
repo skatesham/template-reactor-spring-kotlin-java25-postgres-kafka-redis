@@ -1,7 +1,7 @@
 # Vulnerabilidades de dependências
 
 Revisão do relatório Mend/IDE em 01/10/2026. As versões são selecionadas em
-`build.gradle`: propriedades do BOM do Spring Boot mantêm Jackson, Tomcat e
+`build.gradle`: propriedades do BOM do Spring Boot mantêm Jackson, Tomcat EL e
 Logback alinhados; constraints atualizam os codecs transitivos do Kafka.
 Remover os overrides quando o BOM passar a fornecer versões corrigidas iguais
 ou superiores, conferindo também o classpath de testes.
@@ -10,15 +10,18 @@ ou superiores, conferindo também o classpath de testes.
 | --- | --- | --- |
 | Jackson 3 core/databind e módulo Kotlin | 3.1.7 | [Release 3.1.7](https://github.com/FasterXML/jackson/wiki/Jackson-Release-3.1.7) |
 | Jackson 2 core/databind e demais módulos do BOM | 2.21.7 | [Release 2.21.7](https://github.com/FasterXML/jackson/wiki/Jackson-Release-2.21.7) |
-| Tomcat core/websocket/EL | 11.0.26 | [Avisos Tomcat 11](https://tomcat.apache.org/security-11.html) |
+| Tomcat core/websocket | Removido com MVC; HTTP usa Netty | [Migração reativa](../README.md#execução-reativa) |
+| Tomcat EL (validação Jakarta) | 11.0.26 | [Avisos Tomcat 11](https://tomcat.apache.org/security-11.html) |
 | Logback classic/core | 1.6.3 | [Release 1.6.3](https://logback.qos.ch/news.html#1.6.3) |
 | zstd-jni | 1.5.7-14 | [Release 1.5.7-14](https://github.com/luben/zstd-jni/releases/tag/v1.5.7-14) |
 | at.yawk.lz4:lz4-java | 1.11.1 | [Release 1.11.1](https://github.com/yawkat/lz4-java/releases/tag/v1.11.1) |
 
 Jackson 3.1.6/2.21.6 corrigem parte dos alertas; 3.1.7/2.21.7 incluem também
 CVE-2026-89407, CVE-2026-89425, CVE-2026-91776 e CVE-2026-91777.
-Tomcat 11.0.25 ainda é afetado por várias falhas do relatório, incluindo o
-bypass de segurança de WebSocket CVE-2026-76183; usar 11.0.26.
+Na migração para WebFlux em 02/10/2026, MVC/Tomcat e JPA/Hibernate foram
+removidos do runtime da aplicação. O módulo Tomcat EL continua transitivamente
+no starter de validação; seu override corrigido é preservado. Ele não executa
+um servidor servlet. Conferir Netty, R2DBC e os classpaths atuais no scanner.
 
 ## Broker Kafka removido do classpath de testes
 

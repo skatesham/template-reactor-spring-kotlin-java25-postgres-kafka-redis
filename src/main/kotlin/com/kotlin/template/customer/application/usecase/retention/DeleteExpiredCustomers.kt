@@ -1,12 +1,13 @@
 package com.kotlin.template.customer.application.usecase.retention
 
 import com.kotlin.template.customer.application.exception.CustomerNotFound
+import com.kotlin.template.customer.application.port.CustomerRepository
 import com.kotlin.template.customer.application.usecase.delete.DeleteCustomer
 import com.kotlin.template.customer.application.usecase.delete.DeleteCustomerCommand
 import com.kotlin.template.customer.domain.exception.CustomerRevisionConflict
-import com.kotlin.template.customer.domain.repository.CustomerRepository
 import java.time.Clock
 import org.springframework.stereotype.Service
+import reactor.core.publisher.Mono
 
 @Service
 class DeleteExpiredCustomers(
@@ -14,17 +15,15 @@ class DeleteExpiredCustomers(
     private val delete: DeleteCustomer,
     private val clock: Clock
 ) {
-    fun execute() {
+
+    fun execute(): Mono<Void> = Mono.defer {
         val before = clock.instant().minusSeconds(365 * 86400L)
-        customers.expired(before, 100).forEach { (id, owner) ->
-            val customer = customers.find(id, owner)
-            if (customer != null && customer.updatedAt.isBefore(before)) {
-                try {
-                    delete.execute(DeleteCustomerCommand(id.value, owner, customer.revision))
-                } catch (_: CustomerNotFound) { /* Concurrent delete. */
-                } catch (_: CustomerRevisionConflict) { /* Concurrent update: keep active customer. */
-                }
+        customers.expired(before, 100).concatMap { (id, owner) ->
+            customers.find(id, owner).filter { it.updatedAt.isBefore(before) }.flatMap { customer ->
+                delete.execute(DeleteCustomerCommand(id.value, owner, customer.revision))
+                    .onErrorResume(CustomerNotFound::class.java) { Mono.empty() }
+                    .onErrorResume(CustomerRevisionConflict::class.java) { Mono.empty() }
             }
-        }
+        }.then()
     }
 }

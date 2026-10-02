@@ -17,6 +17,7 @@ import jakarta.validation.Valid
 import org.springframework.http.HttpStatus
 import org.springframework.http.ProblemDetail
 import org.springframework.web.bind.annotation.*
+import reactor.core.publisher.Mono
 
 @RestController
 @RequestMapping("/api/auth")
@@ -48,8 +49,8 @@ class AuthController(private val signup: Signup, private val login: Login) {
             )]
         ),
     )
-    fun signup(@Valid @RequestBody request: SignupRequest): UserResponse =
-        UserResponse.from(signup.execute(request.name, request.email, request.password))
+    fun signup(@Valid @RequestBody request: SignupRequest): Mono<UserResponse> =
+        signup.execute(request.name, request.email, request.password).map(UserResponse::from)
 
     @PostMapping("/login")
     @SecurityRequirements
@@ -76,8 +77,6 @@ class AuthController(private val signup: Signup, private val login: Login) {
             )]
         ),
     )
-    fun login(@Valid @RequestBody request: LoginRequest): LoginResponse {
-        val token = login.execute(request.email, request.password)
-        return LoginResponse(token.value, expiresIn = token.expiresIn)
-    }
+    fun login(@Valid @RequestBody request: LoginRequest): Mono<LoginResponse> =
+        login.execute(request.email, request.password).map { LoginResponse(it.value, expiresIn = it.expiresIn) }
 }

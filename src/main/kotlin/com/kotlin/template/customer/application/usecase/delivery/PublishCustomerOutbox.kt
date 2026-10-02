@@ -8,6 +8,7 @@ import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
+import reactor.core.publisher.Mono
 
 @Service
 class PublishCustomerOutbox(
@@ -22,29 +23,26 @@ class PublishCustomerOutbox(
     }
 
     @Transactional
-    fun execute(): Boolean {
-        val pending = outbox.lockNext() ?: return false
-        val sample = io.micrometer.core.instrument.Timer.start(meters)
-        try {
-            pending.change.validate(clock.instant())
-            publisher.publish(pending.change)
-            outbox.published(pending.change.eventId)
-            meters.counter("customer.outbox.published").increment()
-        } catch (exception: Exception) {
-            if (exception is InterruptedException) Thread.currentThread().interrupt()
-            val attempts = pending.attempts + 1
-            val exhausted = attempts >= maxAttempts
-            val delay = minOf(300L, 1L shl minOf(attempts, 9))
-            outbox.failed(pending.change.eventId, attempts, clock.instant().plusSeconds(delay), exhausted)
-            meters.counter("customer.outbox.failures", "exhausted", exhausted.toString()).increment()
-            // Exception messages and payloads can contain personal data. Only log the class.
-            log.warn(
-                "Customer outbox publication failed eventId={} exhausted={} error={}",
-                pending.change.eventId, exhausted, exception.javaClass.simpleName
-            )
-        } finally {
-            sample.stop(meters.timer("customer.outbox.publish.duration"))
-        }
-        return true
+    fun execute(): Mono<Boolean> = Mono.defer {
+        outbox.lockNext().flatMap { pending ->
+            val sample = io.micrometer.core.instrument.Timer.start(meters)
+            // Only broker/validation failures trigger delivery backoff. A database failure rolls back.
+            Mono.defer { pending.change.validate(clock.instant()); publisher.publish(pending.change) }
+                .thenReturn(true).onErrorResume { exception ->
+                    val attempts = pending.attempts + 1
+                    val exhausted = attempts >= maxAttempts
+                    val delay = minOf(300L, 1L shl minOf(attempts, 9))
+                    outbox.failed(pending.change.eventId, attempts, clock.instant().plusSeconds(delay), exhausted)
+                        .doOnSuccess {
+                            meters.counter("customer.outbox.failures", "exhausted", exhausted.toString()).increment()
+                            log.warn("Customer outbox publication failed eventId={} exhausted={} error={}",
+                                pending.change.eventId, exhausted, exception.javaClass.simpleName)
+                        }.thenReturn(false)
+                }.flatMap { sent ->
+                    if (sent) outbox.published(pending.change.eventId)
+                        .doOnSuccess { meters.counter("customer.outbox.published").increment() }.thenReturn(true)
+                    else Mono.just(true)
+                }.doFinally { sample.stop(meters.timer("customer.outbox.publish.duration")) }
+        }.defaultIfEmpty(false)
     }
 }

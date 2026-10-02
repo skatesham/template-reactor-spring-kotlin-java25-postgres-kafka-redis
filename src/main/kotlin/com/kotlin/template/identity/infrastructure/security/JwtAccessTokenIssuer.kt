@@ -1,6 +1,6 @@
 package com.kotlin.template.identity.infrastructure.security
 
-import com.kotlin.template.identity.application.port.AccessToken
+import com.kotlin.template.identity.application.result.AccessToken
 import com.kotlin.template.identity.application.port.AccessTokenIssuer
 import com.kotlin.template.identity.domain.model.User
 import java.time.Instant

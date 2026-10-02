@@ -24,7 +24,10 @@ Kotlin entra nessa decisão oferecendo outras formas de expressar o mesmo trabal
 
 ## Configuração: a JVM continua aqui
 
-Nos exemplos, usamos um template com Spring MVC e JPA. O projeto exige Java 25 como toolchain — usar Kotlin não elimina o JDK. As versões abaixo são as do projeto usado neste artigo.
+Os exemplos deste artigo retratam a versão anterior do template, com Spring MVC e JPA.
+O repositório foi migrado para WebFlux/Reactor/R2DBC em 02/10/2026; a stack e os
+contratos atuais estão no [README](../../README.md#execução-reativa).
+Os trechos abaixo preservam a comparação original entre Java e Kotlin. O projeto exige Java 25 como toolchain — usar Kotlin não elimina o JDK. As versões abaixo são as do projeto usado neste artigo.
 
 **Java — base no `build.gradle` (Groovy):**
 

@@ -14,11 +14,8 @@ Exemplo:
 
 ```kotlin
 @KafkaListener(topics = ["payment.confirmed"])
-fun consume(message: PaymentConfirmedMessage) {
-    confirmPayment.execute(
-        ConfirmPaymentCommand(message.paymentId)
-    )
-}
+fun consume(message: PaymentConfirmedMessage): Mono<Void> =
+    confirmPayment.execute(ConfirmPaymentCommand(message.paymentId))
 ```
 
 Listener deve adaptar e delegar.
@@ -37,7 +34,7 @@ Application depende de uma porta:
 
 ```kotlin
 interface OrderEventPublisher {
-    fun publish(event: OrderConfirmed)
+    fun publish(event: OrderConfirmed): Mono<Void>
 }
 ```
 
@@ -60,3 +57,9 @@ quando seus ciclos de evolução forem diferentes.
 Para eventos críticos, considerar Transactional Outbox.
 
 A decisão depende do impacto de inconsistência entre banco e broker.
+
+Neste template, o container subscreve o `Mono` do listener e confirma o offset após
+sua conclusão. `max.poll.records=1` preserva a ordem por partição. Retry e envio
+para a DLT compõem o mesmo publisher; falha da DLT mantém o offset original.
+O produtor adapta a future Kafka com `Mono.fromFuture`; a chamada de envio fica
+em `boundedElastic` porque a API do cliente pode aguardar metadata/buffer.

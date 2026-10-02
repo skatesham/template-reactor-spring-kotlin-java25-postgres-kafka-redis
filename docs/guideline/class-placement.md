@@ -17,7 +17,7 @@ Este arquivo define onde cada tipo de classe deve ficar.
 | Domain Exception | `domain/exception/`     |
 | Domain Service   | `domain/service/`       |
 | Specification    | `domain/specification/` |
-| Repository Port  | `domain/repository/`    |
+| Repository Port  | `application/port/`    |
 | Factory          | `domain/factory/`       |
 
 ## Application
@@ -68,7 +68,7 @@ application/
 
 | Tipo                   | Local                                                             |
 |------------------------|-------------------------------------------------------------------|
-| JPA Entity             | `infrastructure/persistence/entity/`                                     |
+| Modelo de persistência (opcional)             | `infrastructure/persistence/entity/`                                     |
 | Spring Data Repository | `infrastructure/persistence/repository/`                                     |
 | Repository Adapter     | `infrastructure/persistence/adapter/`                                     |
 | Persistence Mapper     | `infrastructure/persistence/adapter/`                                     |
@@ -85,7 +85,7 @@ O mapper deve ficar próximo da fronteira que transforma.
 REST ↔ Application
 → interfaces/rest/
 
-Domain ↔ JPA
+Domain ↔ SQL row
 → infrastructure/persistence/
 
 External API ↔ Internal model

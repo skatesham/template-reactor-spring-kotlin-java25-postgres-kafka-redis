@@ -1,5 +1,7 @@
 package com.kotlin.template.architecture
 
+import com.kotlin.template.TemplateApplication
+import java.io.File
 import kotlin.test.assertTrue
 import org.junit.jupiter.api.Test
 import org.springframework.asm.ClassReader
@@ -8,13 +10,12 @@ import org.springframework.asm.FieldVisitor
 import org.springframework.asm.MethodVisitor
 import org.springframework.asm.Opcodes
 import org.springframework.asm.Type
-import com.kotlin.template.TemplateApplication
-import java.io.File
 
 /** Checks compiled dependencies, including calls inside methods, without starting Spring or Docker. */
 class ArchitectureTests {
     private val prefix = "com.kotlin.template."
     private val contexts = setOf("customer", "identity", "audit", "notification")
+    private val blockingCalls = mutableListOf<String>()
     private val dependencies = File(TemplateApplication::class.java.protectionDomain.codeSource.location.toURI())
         .resolve("com/kotlin/template").walkTopDown().filter { it.extension == "class" }
         .associate { resource ->
@@ -79,6 +80,11 @@ class ArchitectureTests {
                         override fun visitMethodInsn(opcode: Int, owner: String, name: String, descriptor: String, isInterface: Boolean) {
                             reference(owner)
                             descriptor(descriptor)
+                            if ((owner.startsWith("reactor/core/publisher/") && name in setOf("block", "blockFirst", "blockLast", "subscribe", "toIterable", "toStream")) ||
+                                (owner in setOf("java/util/concurrent/Future", "java/util/concurrent/CompletableFuture", "java/util/concurrent/CompletionStage") && name in setOf("get", "join")) ||
+                                (owner == "java/lang/Thread" && name == "sleep")) {
+                                blockingCalls.add("${reader.className} -> $owner.$name")
+                            }
                         }
 
                         override fun visitLdcInsn(value: Any?) {
@@ -113,7 +119,7 @@ class ArchitectureTests {
                 target.startsWith(prefix) && (
                     (".application." in owner && (".infrastructure." in target || ".interfaces." in target)) ||
                         (".interfaces.rest." in owner && (
-                            ".infrastructure." in target || ".domain.repository." in target || ".domain.model." in target
+                            ".infrastructure." in target || ".application.port." in target || ".domain.repository." in target || ".domain.model." in target
                         ))
                     )
             }.map { "$owner -> $it" }
@@ -146,5 +152,18 @@ class ArchitectureTests {
             graph.getValue(context).forEach { visit(it, path + context) }
         }
         contexts.forEach { visit(it, emptyList()) }
+    }
+
+    @Test
+    fun `production uses reactive adapters without blocking or detached subscriptions`() {
+        val forbidden = listOf("jakarta.servlet.", "jakarta.persistence.", "org.hibernate.",
+            "org.springframework.web.servlet.", "org.springframework.jdbc.", "org.springframework.data.jpa.",
+            "org.springframework.data.redis.core.StringRedisTemplate", "org.springframework.data.redis.core.RedisTemplate",
+            "org.springframework.transaction.support.TransactionSynchronizationManager")
+        val violations = dependencies.flatMap { (owner, references) -> references.filter { reference ->
+            forbidden.any(reference::startsWith)
+        }.map { "$owner -> $it" } }
+        assertTrue(violations.isEmpty(), violations.joinToString("\n"))
+        assertTrue(blockingCalls.isEmpty(), blockingCalls.joinToString("\n"))
     }
 }

@@ -1,5 +1,6 @@
 package com.kotlin.template.identity
 
+import com.kotlin.template.support.TestDatabase
 import java.util.*
 import java.util.concurrent.Callable
 import java.util.concurrent.CountDownLatch
@@ -10,14 +11,9 @@ import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection
-import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc
+import org.springframework.boot.webtestclient.autoconfigure.AutoConfigureWebTestClient
 import org.springframework.http.MediaType
-import org.springframework.jdbc.core.JdbcTemplate
-import org.springframework.test.web.servlet.MockMvc
-import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get
-import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post
-import org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath
-import org.springframework.test.web.servlet.result.MockMvcResultMatchers.status
+import org.springframework.test.web.reactive.server.WebTestClient
 import org.testcontainers.junit.jupiter.Container
 import org.testcontainers.junit.jupiter.Testcontainers
 import org.testcontainers.postgresql.PostgreSQLContainer
@@ -25,11 +21,12 @@ import org.testcontainers.utility.DockerImageName
 import tools.jackson.databind.ObjectMapper
 
 @Testcontainers
-@AutoConfigureMockMvc
+@AutoConfigureWebTestClient
+@org.springframework.context.annotation.Import(com.kotlin.template.support.ReactiveTestConfiguration::class)
 @SpringBootTest(
     properties = [
         "app.security.jwt.secret=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-        "spring.datasource.password=test",
+        "spring.r2dbc.password=test",
         "spring.docker.compose.enabled=false",
         "app.customer.messaging.enabled=false",
         "app.customer.jobs.enabled=false",
@@ -37,18 +34,17 @@ import tools.jackson.databind.ObjectMapper
 )
 class IdentityIntegrationTests {
     @Autowired
-    lateinit var mvc: MockMvc
+    lateinit var client: WebTestClient
     @Autowired
-    lateinit var jdbc: JdbcTemplate
+    lateinit var db: TestDatabase
     @Autowired
     lateinit var mapper: ObjectMapper
 
     @Test
     fun `migration persistence login and openapi work together`() {
         val email = "user-${UUID.randomUUID()}@example.com"
-        mvc.perform(
-            post("/api/auth/signup").contentType(MediaType.APPLICATION_JSON)
-                .content(
+        client.post().uri("/api/auth/signup").contentType(MediaType.APPLICATION_JSON)
+                .bodyValue(
                     mapper.writeValueAsString(
                         mapOf(
                             "name" to "Synthetic User",
@@ -56,37 +52,34 @@ class IdentityIntegrationTests {
                             "password" to "valid-password"
                         )
                     )
-                )
-        )
-            .andExpect(status().isCreated).andExpect(jsonPath("$.roles[0]").value("USER"))
+                ).exchange()
+            .expectStatus().isCreated.expectBody().jsonPath("$.roles[0]").isEqualTo("USER")
         assertNotEquals(
             "valid-password",
-            jdbc.queryForObject("SELECT password_hash FROM users WHERE email = ?", String::class.java, email)
+            db.queryForObject("SELECT password_hash FROM users WHERE email = ?", String::class.java, email)
         )
         assertEquals(
             1,
-            jdbc.queryForObject(
+            db.queryForObject(
                 "SELECT count(*) FROM user_roles ur JOIN users u ON u.id = ur.user_id WHERE u.email = ? AND ur.role_name = 'USER'",
                 Int::class.java,
                 email
             )
         )
-        val response = mvc.perform(
-            post("/api/auth/login").contentType(MediaType.APPLICATION_JSON)
-                .content(mapper.writeValueAsString(mapOf("email" to email.uppercase(), "password" to "valid-password")))
-        )
-            .andExpect(status().isOk).andReturn().response.contentAsString
+        val response = client.post().uri("/api/auth/login").contentType(MediaType.APPLICATION_JSON)
+                .bodyValue(mapper.writeValueAsString(mapOf("email" to email.uppercase(), "password" to "valid-password"))).exchange()
+            .expectStatus().isOk.expectBody().returnResult().responseBody!!.toString(Charsets.UTF_8)
         val token = mapper.readTree(response).get("accessToken").asString()
-        mvc.perform(get("/api/users/me").header("Authorization", "Bearer $token"))
-            .andExpect(status().isOk).andExpect(jsonPath("$.email").value(email))
-        mvc.perform(get("/v3/api-docs"))
-            .andExpect(status().isOk)
-            .andExpect(jsonPath("$.components.securitySchemes.bearerAuth.scheme").value("bearer"))
-            .andExpect(jsonPath("$.security[0].bearerAuth").isArray)
-            .andExpect(jsonPath("$.paths['/api/auth/signup'].post.security").isEmpty)
-            .andExpect(jsonPath("$.paths['/api/auth/login'].post.security").isEmpty)
-            .andExpect(jsonPath("$.components.schemas.SignupRequest.properties.password.writeOnly").value(true))
-        mvc.perform(get("/swagger-ui/index.html")).andExpect(status().isOk)
+        client.get().uri("/api/users/me").header("Authorization", "Bearer $token").exchange()
+            .expectStatus().isOk.expectBody().jsonPath("$.email").isEqualTo(email)
+        client.get().uri("/v3/api-docs").exchange()
+            .expectStatus().isOk
+            .expectBody().jsonPath("$.components.securitySchemes.bearerAuth.scheme").isEqualTo("bearer")
+            .jsonPath("$.security[0].bearerAuth").isArray
+            .jsonPath("$.paths['/api/auth/signup'].post.security").isEmpty
+            .jsonPath("$.paths['/api/auth/login'].post.security").isEmpty
+            .jsonPath("$.components.schemas.SignupRequest.properties.password.writeOnly").isEqualTo(true)
+        client.get().uri("/swagger-ui/index.html").exchange().expectStatus().isOk
     }
 
     @Test
@@ -104,14 +97,14 @@ class IdentityIntegrationTests {
             val results = (1..2).map {
                 executor.submit(Callable {
                     start.await()
-                    mvc.perform(post("/api/auth/signup").contentType(MediaType.APPLICATION_JSON).content(payload))
-                        .andReturn().response.status
+                    client.post().uri("/api/auth/signup").contentType(MediaType.APPLICATION_JSON).bodyValue(payload).exchange()
+                        .expectBody().returnResult().status.value()
                 })
             }
             start.countDown()
             assertEquals(listOf(201, 409), results.map { it.get() }.sorted())
         }
-        assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM users WHERE email = ?", Int::class.java, email))
+        assertEquals(1, db.queryForObject("SELECT count(*) FROM users WHERE email = ?", Int::class.java, email))
     }
 
     companion object {
